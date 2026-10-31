@@ -1,7 +1,7 @@
 # dotnet-counters.nvim
 
 Live .NET runtime metrics in a Neovim side panel — CPU, memory, GC, thread pool, exceptions and
-HTTP latency, with btop-style graphs — the way Rider shows them next to the debugger.
+HTTP latency, with btop-style graphs — right next to the debugger.
 
 ```
  󰪚 .NET runtime
@@ -150,7 +150,7 @@ fills its height at a steady 300 MB stays green, and only turns yellow and red a
 ## Limitations
 
 - **One collector per process.** The runtime accepts a single metrics session at a time: if
-  another `dotnet-counters`, Rider or `dotnet-monitor` is already collecting from the same process,
+  another `dotnet-counters`, `dotnet-monitor` or IDE profiler is already collecting from the same process,
   attaching fails with "concurrent sessions are not supported" and the panel says so.
 - **About a second of delay.** `dotnet-counters` only writes to a file, in chunks of ~10 KB, so
   samples land with roughly one refresh interval of lag.
