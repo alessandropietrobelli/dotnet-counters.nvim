@@ -3,30 +3,13 @@
 Live .NET runtime metrics in a Neovim side panel — CPU, memory, GC, thread pool, exceptions and
 HTTP latency, with btop-style graphs — right next to the debugger.
 
-```
- 󰪚 .NET runtime
- ● running  MyApi · pid 26054
+![dotnet-counters.nvim while debugging jellyfin: the panel opens with the session, fills with
+CPU, memory, GC, exception and HTTP data, pauses with a breakpoint, hides and shows, and closes
+when the session stops](assets/demo.gif)
 
- CPU                          3.2%  peak 7.9%
-                              ▁▂▂▃▅▇▅▃▂▂▃▂▁▁▂
- Working set              412 MB  peak 520 MB
-                          ▃▃▄▄▅▅▅▆▆▆▆▇▇▇▇▇
-                          ███████████████
- GC heap             188 MB  committed 240 MB
- Allocations                         24 MB/s
- Time in GC                              3.1%
-
- GC ─────────────────────────────────────────
- Collections gen0                   142  9/s
- Exceptions ─────────────────────────────────
- Thrown                         2/s  16 total
-   InvalidOperationException              ×16
- HTTP ───────────────────────────────────────
- In flight                                  3
- p95 (slowest route)                    12 ms
- GET /orders/{id} 200                   12 ms
- POST /orders 500                        4 ms
-```
+<sub>Recorded while debugging [jellyfin](https://github.com/jellyfin/jellyfin) under netcoredbg,
+with a curl loop calling a few endpoints. The demo is a script:
+[`assets/demo.tape`](assets/demo.tape).</sub>
 
 The panel opens by itself when an [nvim-dap](https://github.com/mfussenegger/nvim-dap) session
 starts a .NET process, shows when the debugger has paused it, and closes when the session ends. It
