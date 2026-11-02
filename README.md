@@ -157,6 +157,13 @@ nvim --headless -u tests/minimal_init.lua -c "PlenaryBustedDirectory tests/ {min
 The fixtures in `tests/fixtures/` are real `dotnet-counters` output from a .NET 8 app, a .NET 10
 app and an ASP.NET Core app, cut mid-array the way the plugin reads them while they are written.
 
+## See also
+
+Two more plugins for .NET in Neovim, by the same author:
+
+- [dotnet-tree.nvim](https://github.com/alessandropietrobelli/dotnet-tree.nvim) — a .NET solution explorer, as a neo-tree source: solution folders, projects, references and packages the way the solution declares them
+- [nuget.nvim](https://github.com/alessandropietrobelli/nuget.nvim) — a NuGet package manager: browse, update, consolidate and audit the packages of the whole solution in one window
+
 ## Trademarks
 
 dotnet-counters.nvim is an independent project. It is not affiliated with, endorsed or sponsored by

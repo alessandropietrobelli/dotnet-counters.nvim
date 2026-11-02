@@ -12,8 +12,9 @@ Table of Contents                          *dotnet-counters-table-of-contents*
   - Highlights                      |dotnet-counters-configuration-highlights|
 6. Limitations                                   |dotnet-counters-limitations|
 7. Development                                   |dotnet-counters-development|
-8. Trademarks                                     |dotnet-counters-trademarks|
-9. License                                           |dotnet-counters-license|
+8. See also                                         |dotnet-counters-see-also|
+9. Trademarks                                     |dotnet-counters-trademarks|
+10. License                                          |dotnet-counters-license|
 Live .NET runtime metrics in a Neovim side panel — CPU, memory, GC, thread
 pool, exceptions and HTTP latency, with btop-style graphs — right next to the
 debugger.
@@ -199,7 +200,16 @@ reads them while they are written.
 
 
 ==============================================================================
-8. Trademarks                                     *dotnet-counters-trademarks*
+8. See also                                         *dotnet-counters-see-also*
+
+Two more plugins for .NET in Neovim, by the same author:
+
+- dotnet-tree.nvim <https://github.com/alessandropietrobelli/dotnet-tree.nvim> — a .NET solution explorer, as a neo-tree source: solution folders, projects, references and packages the way the solution declares them
+- nuget.nvim <https://github.com/alessandropietrobelli/nuget.nvim> — a NuGet package manager: browse, update, consolidate and audit the packages of the whole solution in one window
+
+
+==============================================================================
+9. Trademarks                                     *dotnet-counters-trademarks*
 
 dotnet-counters.nvim is an independent project. It is not affiliated with,
 endorsed or sponsored by Microsoft or the .NET Foundation. It runs
@@ -208,7 +218,7 @@ with; .NET and ASP.NET Core are trademarks of their respective owners.
 
 
 ==============================================================================
-9. License                                           *dotnet-counters-license*
+10. License                                          *dotnet-counters-license*
 
 Apache 2.0 <LICENSE>
 
