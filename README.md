@@ -170,6 +170,12 @@ nvim --headless -u tests/minimal_init.lua -c "PlenaryBustedDirectory tests/ {min
 The fixtures in `tests/fixtures/` are real `dotnet-counters` output from a .NET 8 app, a .NET 10
 app and an ASP.NET Core app, cut mid-array the way the plugin reads them while they are written.
 
+## Trademarks
+
+dotnet-counters.nvim is an independent project. It is not affiliated with, endorsed or sponsored by
+Microsoft or the .NET Foundation. It runs Microsoft's `dotnet-counters` tool, whose name it takes to
+say what it works with; .NET and ASP.NET Core are trademarks of their respective owners.
+
 ## License
 
 [Apache 2.0](LICENSE)
