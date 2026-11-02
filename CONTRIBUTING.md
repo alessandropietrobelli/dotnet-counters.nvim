@@ -59,6 +59,19 @@ suite against Neovim stable and nightly.
 Keep `README.md` in sync when you change behaviour, commands or configuration defaults — the
 `setup()` block there mirrors `default_config` in `lua/dotnet-counters/init.lua`.
 
+`doc/dotnet-counters.txt`, the `:help` file, is generated from `README.md` with
+[panvimdoc](https://github.com/kdheepak/panvimdoc): when you change the README, regenerate it and
+commit both together. With [pandoc](https://pandoc.org) installed, from a panvimdoc checkout:
+
+```sh
+./panvimdoc.sh --project-name dotnet-counters --input-file /path/to/README.md \
+  --vim-version "Neovim >= 0.10" --description "Live .NET runtime metrics in a side panel, next to the debugger" \
+  --toc true --treesitter true --ignore-rawblocks true --shift-heading-level-by -1
+```
+
+Parts of the README that make no sense in `:help` (the demo) sit between
+`<!-- panvimdoc-ignore-start -->` and `<!-- panvimdoc-ignore-end -->`.
+
 ## Code layout
 
 | Path | Responsibility |
