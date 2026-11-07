@@ -9,6 +9,8 @@ commands may land in a minor release; they will always be listed here.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-07
+
 ### Fixed
 
 - With two .NET debug sessions running at once (an API and a worker, say), the
@@ -66,6 +68,7 @@ First public release.
 - On .NET 9+ the thread pool's thread and queue counts are reported as deltas,
   so the panel shows work items per second instead.
 
-[Unreleased]: https://github.com/alessandropietrobelli/dotnet-counters.nvim/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/alessandropietrobelli/dotnet-counters.nvim/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/alessandropietrobelli/dotnet-counters.nvim/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/alessandropietrobelli/dotnet-counters.nvim/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/alessandropietrobelli/dotnet-counters.nvim/releases/tag/v0.1.0
