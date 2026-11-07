@@ -9,6 +9,16 @@ commands may land in a minor release; they will always be listed here.
 
 ## [Unreleased]
 
+### Fixed
+
+- With two .NET debug sessions running at once (an API and a worker, say), the
+  panel only reacts to the session whose process it is collecting from. Ending
+  the other session no longer stops the metrics and closes the panel, and a
+  breakpoint hit in the other process no longer shows this one as paused. A
+  process attached by hand with `:DotnetCounters attach` is no longer stopped
+  when a debug session ends
+  ([#1](https://github.com/alessandropietrobelli/dotnet-counters.nvim/issues/1)).
+
 ## [0.1.1] - 2026-11-02
 
 No change to the plugin's code.
