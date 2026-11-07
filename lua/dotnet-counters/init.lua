@@ -48,6 +48,12 @@ local state = metrics.new(M.config.history)
 local view = { status = "stopped" }
 ---@type DotnetCountersCollector?
 local active
+-- The id of the nvim-dap session whose process is being collected, nil when the
+-- collection was started by hand. Only that session's events touch the panel: with
+-- two sessions running (an API and a worker), the other one must not pause it or
+-- stop it.
+---@type integer?
+local owner
 local last_event = 0
 ---@type uv.uv_timer_t?
 local idle_timer
@@ -131,6 +137,7 @@ function M.attach(pid, name)
     return
   end
   M.detach()
+  owner = nil
   state = metrics.new(M.config.history)
   view = { status = "starting", pid = pid, name = name }
   panel.open(M.config.window, reset)
@@ -246,27 +253,36 @@ function M.hook_dap()
     return session and session.config and vim.tbl_contains(M.config.dap.adapters, session.config.type)
   end
 
+  -- The session that started the current collection, not just any .NET session
+  local function owns(session)
+    return ours(session) and owner ~= nil and session.id == owner
+  end
+
   dap.listeners.after.event_process[key] = function(session, body)
     if M.config.dap.enabled and ours(session) and body and body.systemProcessId then
       local name = session.config.program and vim.fn.fnamemodify(session.config.program, ":t:r") or body.name
       M.attach(body.systemProcessId, name)
+      if active then
+        owner = session.id
+      end
     end
   end
   dap.listeners.after.event_stopped[key] = function(session)
-    if ours(session) and active then
+    if owns(session) and active then
       view.status = "paused"
       state:commit()
       redraw()
     end
   end
   dap.listeners.after.event_continued[key] = function(session)
-    if ours(session) and active and view.status == "paused" then
+    if owns(session) and active and view.status == "paused" then
       view.status = "running"
       redraw()
     end
   end
   local function finished(session)
-    if ours(session) and (active or panel.is_open()) and view.pid then
+    if owns(session) and (active or panel.is_open()) and view.pid then
+      owner = nil
       M.detach(M.config.dap.close_on_exit)
     end
   end
