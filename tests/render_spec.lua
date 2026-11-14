@@ -154,6 +154,27 @@ describe("panel content", function()
     end
   end)
 
+  it("keeps the header inside a narrow panel, the key hint going first", function()
+    local view = {
+      status = "error",
+      pid = 100,
+      name = "A.Very.Long.Service.Name",
+      message = "Process 100 is not running, and this message is longer than the panel",
+      index = 2,
+      count = 12,
+      others = { { pid = 200, name = "Worker", status = "running" } },
+    }
+    local wide = render.build(metrics.new(10), view, { width = 46, graph_height = 2 })
+    assert.matches("2/12  <Tab> next", wide[1].text)
+    local lines = render.build(metrics.new(10), view, { width = 24, graph_height = 2 })
+    assert.matches("2/12$", lines[1].text)
+    assert.matches("^Process 100", lines[3].text, "the message is under the status it explains")
+    assert.matches("Worker", lines[4].text)
+    for _, line in ipairs(lines) do
+      assert.is_true(vim.fn.strdisplaywidth(line.text) <= 22, line.text)
+    end
+  end)
+
   it("says it is waiting before the first sample", function()
     local lines = render.build(metrics.new(10), { status = "starting" }, { width = 46, graph_height = 2 })
     assert.matches("Waiting", lines[#lines].text)

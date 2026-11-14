@@ -3,6 +3,10 @@ if vim.g.loaded_dotnet_counters then
 end
 vim.g.loaded_dotnet_counters = true
 
+local function usage(msg)
+  vim.notify(msg, vim.log.levels.ERROR, { title = "dotnet-counters" })
+end
+
 local subcommands = {
   toggle = function()
     require("dotnet-counters").toggle()
@@ -17,6 +21,8 @@ local subcommands = {
     local pid = tonumber(args[1])
     if pid then
       require("dotnet-counters").attach(pid)
+    elseif args[1] then
+      usage("Not a pid: " .. args[1])
     else
       require("dotnet-counters").pick()
     end
@@ -24,6 +30,8 @@ local subcommands = {
   detach = function(args)
     if args[1] == "all" then
       require("dotnet-counters").detach_all()
+    elseif args[1] then
+      usage("Usage: :DotnetCounters detach [all]")
     else
       require("dotnet-counters").detach()
     end
@@ -52,11 +60,17 @@ end, {
   nargs = "*",
   desc = ".NET runtime counters panel",
   complete = function(arg_lead, line)
-    if line:match("^%S+%s+%S+%s") then
-      return {}
+    local function matching(names)
+      return vim.tbl_filter(function(name)
+        return name:find(arg_lead, 1, true) == 1
+      end, names)
     end
-    return vim.tbl_filter(function(name)
-      return name:find(arg_lead, 1, true) == 1
-    end, vim.tbl_keys(subcommands))
+    local sub = line:match("^%S+%s+(%S+)%s")
+    if sub then
+      return sub == "detach" and not line:match("^%S+%s+%S+%s+%S+%s") and matching({ "all" }) or {}
+    end
+    local names = vim.tbl_keys(subcommands)
+    table.sort(names)
+    return matching(names)
   end,
 })

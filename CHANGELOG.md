@@ -28,9 +28,18 @@ commands may land in a minor release; they will always be listed here.
 ### Changed
 
 - `:DotnetCounters attach` and a new debug session add a process instead of
-  replacing the one collected. When a session ends, only its process leaves the
-  panel, which closes once none is left (`dap.close_on_exit`).
-  `:DotnetCounters detach` stops the process shown.
+  replacing the one collected. When a session ends, only its process stops;
+  with `dap.close_on_exit` it also leaves the panel, which closes once none is
+  still collected. `:DotnetCounters detach` and `reset` act on the process
+  shown.
+
+### Fixed
+
+- A collector that fails says why: the error of `dotnet-counters` is shown,
+  where it used to read "stopped" with no message when it printed an
+  exception.
+- `dotnet-counters` no longer keeps running after Neovim exits, holding the
+  process's session so that the next attach failed.
 
 ## [0.1.2] - 2026-11-07
 

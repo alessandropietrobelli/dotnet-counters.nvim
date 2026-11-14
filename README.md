@@ -16,8 +16,8 @@ with a curl loop calling a few endpoints. The demo is a script:
 <!-- panvimdoc-ignore-end -->
 
 The panel opens by itself when an [nvim-dap](https://github.com/mfussenegger/nvim-dap) session
-starts a .NET process, shows when the debugger has paused it, and closes when the session ends. It
-can also attach to any running .NET process, debugger or not, and follow several at once: an API
+starts a .NET process, shows when the debugger has paused it, and closes when the last session ends.
+It can also attach to any running .NET process, debugger or not, and follow several at once: an API
 and its worker, debugged together, each keep their own graphs.
 
 ## How it works
@@ -76,12 +76,13 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 | `:DotnetCounters next` / `prev` | Show the next or previous process collected |
 | `:DotnetCounters detach` | Stop collecting from the process shown, keep its last data on screen |
 | `:DotnetCounters detach all` | Stop collecting from every process |
-| `:DotnetCounters reset` | Clear history, peaks and totals |
+| `:DotnetCounters reset` | Clear history, peaks and totals of the process shown |
 | `:DotnetCounters open` / `close` | Open or close the panel |
 
 In the panel, `q` closes it, `r` resets the history of the process shown, and `<Tab>` / `<S-Tab>`
-show the next or previous process. Processes that stopped leave the list when another one is
-attached.
+show the next or previous process. Processes that stopped leave the list when another one starts
+being collected. A process you attached by hand stays collected when a debug session that attached
+to it ends.
 
 ## Configuration
 
@@ -112,8 +113,8 @@ require("dotnet-counters").setup({
     -- Attach and open the panel when a debug session of one of these adapters starts a process
     enabled = true,
     adapters = { "coreclr", "netcoredbg" },
-    -- When a debug session ends, take its process off the panel, and close the panel once no
-    -- process is left; false keeps it there, stopped, with its last data
+    -- When a debug session ends, take its process off the panel, and close the panel once none
+    -- is still collected (those stopped go too); false keeps it there, stopped, with its last data
     close_on_exit = true,
     -- Show the process that stops at a breakpoint, with several debugged at once
     follow = true,
