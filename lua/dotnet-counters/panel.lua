@@ -90,7 +90,7 @@ end
 
 ---@param state DotnetCountersState
 ---@param view DotnetCountersView
----@param opts {graph_height: integer, thresholds: table}
+---@param opts {graph_height: integer, thresholds: table, custom_graphs: string[]?}
 function M.draw(state, view, opts)
   if not M.is_open() or not buf then
     return
@@ -100,6 +100,7 @@ function M.draw(state, view, opts)
     width = width,
     graph_height = opts.graph_height,
     thresholds = opts.thresholds,
+    custom_graphs = opts.custom_graphs,
   })
   local text = {}
   for i, line in ipairs(lines) do

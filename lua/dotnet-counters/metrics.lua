@@ -133,6 +133,38 @@ local HANDLERS = {
   end,
 }
 
+-- Providers whose counters the panel has sections for. What else they publish (heap
+-- fragmentation, JIT…) is left out; every other provider goes to the Custom section.
+local BUILTIN = { ["System.Runtime"] = true, ["Microsoft.AspNetCore.Hosting"] = true }
+
+---@class DotnetCountersUnit
+---@field base string name without the suffix
+---@field unit string? "By", "s", "{order}", "Count"…
+---@field rate boolean per second
+
+--- Name and unit of a counter, from the suffix dotnet-counters adds to the name:
+--- "orders.processed ({order} / 1 sec)" is a rate of {order}, "orders.duration (s)" a value in seconds.
+---@param name string
+---@return DotnetCountersUnit
+function M.unit(name)
+  local base, suffix = name:match("^(.-) %((.*)%)$")
+  if not base then
+    return { base = name, rate = false }
+  end
+  local per_second = suffix:match("^(.-)%s*/%s*1 sec$")
+  return { base = base, unit = per_second or suffix, rate = per_second ~= nil }
+end
+
+---@class DotnetCountersCustom
+---@field provider string
+---@field name string instrument name, without the unit
+---@field unit string?
+---@field rate boolean
+---@field tags string tag set, without the histogram's Percentile
+---@field percentile string? "95" for a histogram: its 95th percentile is what is kept
+---@field value number latest
+---@field history number[] oldest first
+
 -- Metrics that get a graph, with the history kept per key
 M.GRAPHED = { "cpu", "working_set", "gc_heap", "alloc_rate", "gc_time", "http_active", "http_p95" }
 
@@ -146,17 +178,25 @@ local TOTALS = { "gen0", "gen1", "gen2", "exceptions" }
 ---@field exception_types table<string, integer>
 ---@field routes table[] slowest routes of the last tick
 ---@field peak table<string, number>
+---@field custom DotnetCountersCustom[] counters of other providers, in the order they first came
+---@field custom_dropped table<string, integer> by "provider\0name": tag sets over the limit
 ---@field samples integer
 ---@field max_history integer
+---@field max_tag_sets integer
+---@field private custom_by_id table<string, DotnetCountersCustom|false> false: over the tag set limit
 ---@field private tick table?
 ---@field private seen table<string, true> counters already in the tick being filled
 local State = {}
 State.__index = State
 
 ---@param max_history integer
+---@param opts {max_tag_sets: integer?}?
 ---@return DotnetCountersState
-function M.new(max_history)
-  local self = setmetatable({ max_history = max_history or 120 }, State)
+function M.new(max_history, opts)
+  local self = setmetatable({
+    max_history = max_history or 120,
+    max_tag_sets = opts and opts.max_tag_sets or 5,
+  }, State)
   self:reset()
   return self
 end
@@ -171,6 +211,9 @@ function State:reset()
   self.exception_types = {}
   self.routes = {}
   self.peak = {}
+  self.custom = {}
+  self.custom_by_id = {}
+  self.custom_dropped = {}
   self.samples = 0
   self.tick = nil
   self.seen = {}
@@ -193,7 +236,7 @@ function State:commit()
   end
 
   for key, value in pairs(t) do
-    if key ~= "routes" and key ~= "exception_types" then
+    if key ~= "routes" and key ~= "exception_types" and key ~= "custom" then
       self.current[key] = value
     end
   end
@@ -211,6 +254,20 @@ function State:commit()
       return a.p95 > b.p95
     end)
     self.routes = t.routes
+  end
+
+  -- A rate missing from the tick had nothing to count; a value stays what it was
+  local custom = t.custom or {}
+  for _, c in ipairs(self.custom) do
+    local value = custom[c]
+    if value == nil then
+      value = c.rate and 0 or c.value
+    end
+    c.value = value
+    table.insert(c.history, value)
+    if #c.history > self.max_history then
+      table.remove(c.history, 1)
+    end
   end
 
   for _, key in ipairs(M.GRAPHED) do
@@ -242,6 +299,11 @@ function State:add(events)
   local committed = false
   for _, event in ipairs(events) do
     local handler = HANDLERS[base_name(event.name)]
+    if not handler and not BUILTIN[event.provider] then
+      handler = function(t, value, tags)
+        self:add_custom(t, event, value, tags)
+      end
+    end
     if handler then
       local id = event.name .. "\0" .. (event.tags or "")
       if self.seen[id] then
@@ -254,6 +316,64 @@ function State:add(events)
     end
   end
   return committed
+end
+
+--- The Custom entry of an event, made on its first sample. Only the 95th percentile of a
+--- histogram is kept. Nil when the instrument already has `max_tag_sets` tag sets: the extra
+--- ones are counted in `custom_dropped` instead.
+---@param event DotnetCountersEvent
+---@param tags string
+---@return DotnetCountersCustom?
+function State:custom_entry(event, tags)
+  local percentile = tags:match("Percentile=(%d+)")
+  tags = tags:gsub(",?Percentile=%d+", ""):gsub("^,", "")
+  local unit = M.unit(event.name)
+  local id = table.concat({ event.provider, unit.base, tags }, "\0")
+  local entry = self.custom_by_id[id]
+  if entry ~= nil then
+    return entry or nil
+  end
+  local instrument = event.provider .. "\0" .. unit.base
+  local sets = 0
+  for _, c in ipairs(self.custom) do
+    if c.provider == event.provider and c.name == unit.base then
+      sets = sets + 1
+    end
+  end
+  if sets >= self.max_tag_sets then
+    self.custom_dropped[instrument] = (self.custom_dropped[instrument] or 0) + 1
+    self.custom_by_id[id] = false
+    return nil
+  end
+  entry = {
+    provider = event.provider,
+    name = unit.base,
+    unit = unit.unit,
+    rate = unit.rate,
+    tags = tags,
+    percentile = percentile and "95" or nil,
+    value = 0,
+    history = {},
+  }
+  self.custom_by_id[id] = entry
+  table.insert(self.custom, entry)
+  return entry
+end
+
+---@param t table the tick
+---@param event DotnetCountersEvent
+---@param value number
+---@param tags string?
+function State:add_custom(t, event, value, tags)
+  local percentile = (tags or ""):match("Percentile=(%d+)")
+  if percentile and percentile ~= "95" then
+    return
+  end
+  local entry = self:custom_entry(event, tags or "")
+  if entry then
+    t.custom = t.custom or {}
+    t.custom[entry] = value
+  end
 end
 
 return M

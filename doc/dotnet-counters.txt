@@ -9,6 +9,7 @@ Table of Contents                          *dotnet-counters-table-of-contents*
 3. Installation                                 |dotnet-counters-installation|
 4. Usage                                               |dotnet-counters-usage|
 5. Configuration                               |dotnet-counters-configuration|
+  - Custom counters            |dotnet-counters-configuration-custom-counters|
   - Highlights                      |dotnet-counters-configuration-highlights|
 6. Limitations                                   |dotnet-counters-limitations|
 7. Development                                   |dotnet-counters-development|
@@ -39,6 +40,9 @@ reads its output as it grows and renders the panel once per sample.
     same metrics.
 - **ASP.NET Core** apps also get requests in flight and the p95 latency of each route, with the
     status code.
+- **Your own meters** show up too: add their provider to `counters`, e.g.
+    `"System.Runtime,Microsoft.AspNetCore.Hosting,MyCompany.Orders"`. See
+    |dotnet-counters-configuration-custom-counters|.
 - **CPU** is a percentage of the whole machine (all cores), like the .NET 8 counter and Task Manager.
 - **While the debugger is stopped** the process is suspended, so the graphs pause with it.
 
@@ -113,6 +117,14 @@ Defaults:
       max_file_size = 32 * 1024 * 1024,
       -- Samples kept for the graphs
       history = 200,
+      -- Counters of providers other than System.Runtime and Microsoft.AspNetCore.Hosting (your own
+      -- meters, added to `counters`) go to the Custom section, one line per tag set with a sparkline
+      custom = {
+        -- Tag sets shown per instrument; the others are counted in a "+N more" line
+        max_tag_sets = 5,
+        -- Instruments that get a full graph instead of a line, e.g. { "orders.processed" }
+        graphs = {},
+      },
       dap = {
         -- Attach and open the panel when a debug session of one of these adapters starts a process
         enabled = true,
@@ -137,6 +149,37 @@ Defaults:
       },
     })
 <
+
+
+CUSTOM COUNTERS                  *dotnet-counters-configuration-custom-counters*
+
+Every provider in `counters` other than `System.Runtime` and
+`Microsoft.AspNetCore.Hosting` goes to a Custom section at the bottom of the
+panel: your own `System.Diagnostics.Metrics` meters, or built-in ones the panel
+has no section for, such as `Microsoft.AspNetCore.Server.Kestrel` or
+`System.Net.Http`.
+
+>
+    Custom ─────────────────────────────────────
+    orders.processed
+      region=eu               ▇▇▄▇▇█▄       11/s
+      region=us               ▄█▅██▇█       15/s
+      +1 more
+    orders.duration
+      region=eu               █▇█▇▆█▇ p95 275 ms
+    orders.payload.size       ▇█▆██▇▇   115 KB/s
+    orders.queue.length       ▅▃█▇▂▄▅         15
+<
+
+- **One line per instrument and tag set**, up to `custom.max_tag_sets`, with
+    the last value and a sparkline of the recent ones. An instrument with tags
+    gets its name on a line of its own.
+- **Units** come from the suffix `dotnet-counters` adds to the name: `By` reads
+    as bytes, `s` and `ms` as durations, `%` as a percentage, anything else
+    (`{order}`) as a number. A counter (`/ 1 sec`) is shown per second.
+- **Histograms** show their 95th percentile.
+- **`custom.graphs`** lists the instruments that get a full graph, like CPU and
+    memory.
 
 
 HIGHLIGHTS                          *dotnet-counters-configuration-highlights*

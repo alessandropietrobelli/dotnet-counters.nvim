@@ -9,6 +9,15 @@ commands may land in a minor release; they will always be listed here.
 
 ## [Unreleased]
 
+### Added
+
+- Counters from providers the panel has no section for, such as your own
+  `System.Diagnostics.Metrics` meters added to `counters`, show in a Custom
+  section: one line per instrument and tag set, with the last value in its unit
+  and a sparkline. Histograms show their 95th percentile. `custom.max_tag_sets`
+  limits the tag sets shown and `custom.graphs` gives chosen instruments a full
+  graph ([#3](https://github.com/alessandropietrobelli/dotnet-counters.nvim/issues/3)).
+
 ## [0.1.2] - 2026-11-07
 
 ### Fixed

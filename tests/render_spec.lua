@@ -104,7 +104,7 @@ describe("panel content", function()
     return state
   end
 
-  for _, name in ipairs({ "net10.json", "net8.json", "aspnet8.json" }) do
+  for _, name in ipairs({ "net10.json", "net8.json", "aspnet8.json", "custom10.json" }) do
     it("fits the window for " .. name, function()
       local lines = render.build(state_from(name), { status = "running", pid = 42, name = "App" }, {
         width = 46,
@@ -137,5 +137,74 @@ describe("panel content", function()
   it("says it is waiting before the first sample", function()
     local lines = render.build(metrics.new(10), { status = "starting" }, { width = 46, graph_height = 2 })
     assert.matches("Waiting", lines[#lines].text)
+  end)
+
+  --- The lines of the Custom section, from its title to the end.
+  local function custom_lines(state, opts)
+    local lines =
+      render.build(state, { status = "running" }, vim.tbl_extend("force", { width = 46, graph_height = 2 }, opts or {}))
+    local out, inside = {}, false
+    for _, line in ipairs(lines) do
+      inside = inside or line.text:find("^Custom") ~= nil
+      if inside then
+        table.insert(out, line.text)
+      end
+    end
+    return out
+  end
+
+  it("shows other providers' counters in a Custom section, one line per tag set", function()
+    local lines = custom_lines(state_from("custom10.json"))
+    local text = table.concat(lines, "\n")
+    assert.matches("^Custom", lines[1])
+    assert.matches("\norders%.processed\n", text, nil, "a name line above its tag sets")
+    assert.matches("\n  region=eu +[\128-\255 ]+ +%d+/s", text)
+    assert.matches("\n  region=eu +[\128-\255 ]+ +p95 %d+ ms", text, nil, "a histogram shows its p95")
+    assert.matches("\norders%.payload%.size +[\128-\255 ]+ +[%d.]+ KB/s", text)
+    assert.matches("\norders%.queue%.length +[\128-\255 ]+ +%d+\n", text)
+    assert.not_matches("fragmentation", text, "System.Runtime counters the panel has no section for")
+    assert.is_nil(table.concat(custom_lines(state_from("net10.json")), ""):find("Custom"))
+  end)
+
+  it("lines the values up and limits the tag sets shown", function()
+    local text = table.concat(vim.fn.readfile(root .. "/fixtures/custom10.json"), "\n")
+    local state = metrics.new(50, { max_tag_sets = 2 })
+    state:add(parser.new():feed(text))
+    state:commit()
+    local lines = custom_lines(state)
+    local ends = {}
+    for _, line in ipairs(lines) do
+      if line:find("[\128-\255]") then
+        ends[vim.fn.strdisplaywidth(line)] = true
+      end
+    end
+    assert.same({ [44] = true }, ends)
+    assert.equals(2, #vim.tbl_filter(function(l)
+      return l == "  +1 more"
+    end, lines))
+  end)
+
+  it("draws a full graph for the instruments asked for", function()
+    local lines = custom_lines(state_from("custom10.json"), { custom_graphs = { "orders.queue.length" } })
+    for i, line in ipairs(lines) do
+      if line:find("^orders%.queue%.length") then
+        assert.not_matches("[\128-\255]", line, "no sparkline on the value line")
+        assert.matches("^[ \128-\255]+$", lines[i + 1])
+        assert.matches("^[ \128-\255]+$", lines[i + 2])
+        return
+      end
+    end
+    error("orders.queue.length not shown")
+  end)
+end)
+
+describe("custom values", function()
+  it("are read in their unit", function()
+    assert.equals("1.5 KB/s", render.value(1536, "By", true))
+    assert.equals("12 ms", render.value(0.012, "s", false))
+    assert.equals("12 ms", render.value(12, "ms", false))
+    assert.equals("7.5%", render.value(7.5, "%", false))
+    assert.equals("1,234/s", render.value(1234, "{order}", true))
+    assert.equals("0.25", render.value(0.25, nil, false))
   end)
 end)

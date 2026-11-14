@@ -199,3 +199,89 @@ describe("metrics state", function()
     assert.same({}, state.history.cpu)
   end)
 end)
+
+describe("custom meters", function()
+  local evs = events("custom10.json")
+  local state = load("custom10.json")
+
+  local function entry(name, tags)
+    for _, c in ipairs(state.custom) do
+      if c.name == name and c.tags == (tags or "") then
+        return c
+      end
+    end
+  end
+
+  it("reads the unit from the name", function()
+    assert.same(
+      { base = "orders.processed", unit = "{order}", rate = true },
+      metrics.unit("orders.processed ({order} / 1 sec)")
+    )
+    assert.same({ base = "orders.duration", unit = "s", rate = false }, metrics.unit("orders.duration (s)"))
+    assert.same({ base = "Request Rate", unit = "Count", rate = true }, metrics.unit("Request Rate (Count / 1 sec)"))
+    assert.same({ base = "plain", rate = false }, metrics.unit("plain"))
+  end)
+
+  it("keeps one entry per instrument and tag set, from other providers only", function()
+    for _, c in ipairs(state.custom) do
+      assert.equals("MyCompany.Orders", c.provider)
+    end
+    local processed = entry("orders.processed", "region=eu")
+    assert.equals("{order}", processed.unit)
+    assert.is_true(processed.rate)
+    assert.equals(state.samples, #processed.history)
+    assert.equals(
+      last(
+        vim.tbl_filter(function(e)
+          return e.tags == "region=eu"
+        end, evs),
+        "orders.processed"
+      ),
+      processed.value
+    )
+    assert.is_false(entry("orders.queue.length").rate)
+    assert.equals(9, #state.custom)
+    assert.equals(6, #vim.tbl_filter(function(c)
+      return c.tags ~= ""
+    end, state.custom))
+  end)
+
+  it("keeps the 95th percentile of a histogram", function()
+    local duration = entry("orders.duration", "region=us")
+    assert.equals("95", duration.percentile)
+    assert.equals(
+      last(
+        vim.tbl_filter(function(e)
+          return e.tags == "region=us,Percentile=95"
+        end, evs),
+        "orders.duration"
+      ),
+      duration.value
+    )
+  end)
+
+  it("counts the tag sets over the limit instead of keeping them", function()
+    local limited = metrics.new(100, { max_tag_sets = 2 })
+    limited:add(evs)
+    limited:commit()
+    assert.equals(1, limited.custom_dropped["MyCompany.Orders\0orders.processed"])
+    assert.equals(1, limited.custom_dropped["MyCompany.Orders\0orders.duration"])
+    assert.equals(7, #limited.custom)
+  end)
+
+  it("puts a rate to zero when a tick misses it, and keeps a value", function()
+    local s = metrics.new(10)
+    local function tick(list)
+      s:add(list)
+      s:commit()
+    end
+    local function ev(name, value)
+      return { provider = "App", name = name, tags = "", value = value }
+    end
+    tick({ ev("jobs (s / 1 sec)", 3), ev("queue ({job})", 7) })
+    tick({})
+    tick({ ev("other", 1) })
+    assert.same({ 3, 0 }, s.custom[1].history)
+    assert.same({ 7, 7 }, s.custom[2].history)
+  end)
+end)

@@ -44,6 +44,30 @@ function M.count(n)
   return (out:gsub("^,", ""))
 end
 
+--- A custom counter's value in its unit: "By" as bytes, "s"/"ms" as a duration, "%" as a
+--- percentage, anything else ("{order}", "Count") as a number. Rates get "/s".
+---@param value number
+---@param unit string?
+---@param rate boolean
+---@return string
+function M.value(value, unit, rate)
+  local text
+  if unit == "By" then
+    text = M.bytes(value)
+  elseif unit == "s" then
+    text = M.duration(value)
+  elseif unit == "ms" then
+    text = M.duration(value / 1000)
+  elseif unit == "%" then
+    text = M.percent(value)
+  elseif value ~= math.floor(value) and math.abs(value) < 100 then
+    text = ("%.2f"):format(value)
+  else
+    text = M.count(value)
+  end
+  return rate and (text .. "/s") or text
+end
+
 --- Rows of a block graph, top row first. Each column is one sample, newest on the right.
 ---@param values number[]
 ---@param width integer
@@ -186,7 +210,14 @@ end
 --- Build the whole panel.
 ---@param state DotnetCountersState
 ---@param view DotnetCountersView
----@param opts {width: integer, graph_height: integer, thresholds: table?, total_memory: number?}
+---@class DotnetCountersBuildOpts
+---@field width integer
+---@field graph_height integer
+---@field thresholds table?
+---@field total_memory number?
+---@field custom_graphs string[]? custom instruments drawn with a full graph
+
+---@param opts DotnetCountersBuildOpts
 ---@return DotnetCountersLine[]
 function M.build(state, view, opts)
   local b = setmetatable({ lines = {} }, Builder)
@@ -311,7 +342,76 @@ function M.build(state, view, opts)
     end
   end
 
+  M.custom(b, state, width, g, opts.custom_graphs or {})
+
   return b.lines
+end
+
+local SPARK_WIDTH = 10
+
+--- The Custom section: counters from providers the panel has no section for, grouped by
+--- instrument, one line per tag set with a sparkline; those in `graphs` get a full graph.
+---@param b DotnetCountersBuilder
+---@param state DotnetCountersState
+---@param width integer
+---@param g fun(floor: number?, thresholds: table?): table graph options
+---@param graphs string[] instrument names
+function M.custom(b, state, width, g, graphs)
+  if #state.custom == 0 then
+    return
+  end
+  b:blank()
+  b:section("Custom", width)
+  local function text(c)
+    return (c.percentile and ("p" .. c.percentile .. " ") or "") .. M.value(c.value, c.unit, c.rate)
+  end
+  -- Values right-aligned in one column, so the sparklines line up
+  local value_width = 0
+  local order, by_name = {}, {}
+  for _, c in ipairs(state.custom) do
+    value_width = math.max(value_width, vim.fn.strdisplaywidth(text(c)))
+    local key = c.provider .. "\0" .. c.name
+    if not by_name[key] then
+      by_name[key] = {}
+      table.insert(order, key)
+    end
+    table.insert(by_name[key], c)
+  end
+  for _, key in ipairs(order) do
+    local entries = by_name[key]
+    local first = entries[1]
+    local graphed = vim.tbl_contains(graphs, first.name)
+    local tagged = #entries > 1 or first.tags ~= ""
+    if tagged then
+      b:add({ { first.name, "DotnetCountersLabel" } })
+    end
+    for _, c in ipairs(entries) do
+      local label = tagged and ("  " .. c.tags) or c.name
+      local value = text(c)
+      if graphed then
+        b:metric(label, value, nil, width)
+        b:graph(c.history, g(nil, nil))
+      else
+        local spark = M.graph(c.history, SPARK_WIDTH, 1, 0)[1]
+        local room = width - SPARK_WIDTH - value_width - 2
+        if vim.fn.strdisplaywidth(label) > room then
+          label = vim.fn.strcharpart(label, 0, room - 1) .. "…"
+        end
+        local pad = math.max(room - vim.fn.strdisplaywidth(label), 0) + 1
+        b:add({
+          { label, tagged and "DotnetCountersMuted" or "DotnetCountersLabel" },
+          { string.rep(" ", pad) },
+          { spark, "DotnetCountersLow" },
+          { string.rep(" ", value_width - vim.fn.strdisplaywidth(value) + 1) },
+          { value, "DotnetCountersValue" },
+        })
+      end
+    end
+    local dropped = state.custom_dropped[key]
+    if dropped then
+      b:add({ { ("  +%d more"):format(dropped), "DotnetCountersMuted" } })
+    end
+  end
 end
 
 return M
