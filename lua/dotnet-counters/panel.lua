@@ -37,7 +37,8 @@ function M.is_open()
 end
 
 ---@param on_reset fun()
-local function ensure_buf(on_reset)
+---@param on_next fun(step: integer)?
+local function ensure_buf(on_reset, on_next)
   if buf and vim.api.nvim_buf_is_valid(buf) then
     return buf
   end
@@ -50,19 +51,28 @@ local function ensure_buf(on_reset)
   vim.api.nvim_buf_set_name(buf, "dotnet-counters://panel")
   vim.keymap.set("n", "q", M.close, { buffer = buf, desc = "Close .NET counters" })
   vim.keymap.set("n", "r", on_reset, { buffer = buf, desc = "Reset .NET counters history" })
+  if on_next then
+    vim.keymap.set("n", "<Tab>", function()
+      on_next(1)
+    end, { buffer = buf, desc = "Show the next .NET process" })
+    vim.keymap.set("n", "<S-Tab>", function()
+      on_next(-1)
+    end, { buffer = buf, desc = "Show the previous .NET process" })
+  end
   return buf
 end
 
 ---@param opts {position: "left"|"right", width: integer}
 ---@param on_reset fun()
-function M.open(opts, on_reset)
+---@param on_next fun(step: integer)? cycle between the processes collected
+function M.open(opts, on_reset, on_next)
   if M.is_open() then
     return
   end
   local previous = vim.api.nvim_get_current_win()
   vim.cmd((opts.position == "left" and "topleft" or "botright") .. " vertical " .. opts.width .. "split")
   win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(win, ensure_buf(on_reset))
+  vim.api.nvim_win_set_buf(win, ensure_buf(on_reset, on_next))
   local wo = vim.wo[win]
   wo.number = false
   wo.relativenumber = false

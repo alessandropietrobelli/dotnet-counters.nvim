@@ -235,6 +235,9 @@ end
 ---@field pid integer?
 ---@field status "starting"|"running"|"paused"|"stopped"|"error"
 ---@field message string?
+---@field others {pid: integer, name: string?, status: string}[]? the other processes listed
+---@field index integer? position of this process among all of them
+---@field count integer? number of processes
 
 ---@class DotnetCountersBuildOpts
 ---@field width integer
@@ -271,13 +274,34 @@ function M.build(state, view, opts)
     error = "DotnetCountersHigh",
   }
   local status_icon = { running = "● ", paused = "⏸ ", starting = "◌ ", stopped = "■ ", error = "✗ " }
-  b:add({ { "󰪚 .NET runtime", "DotnetCountersTitle" } })
+  local title_text = "󰪚 .NET runtime"
+  local title = { { title_text, "DotnetCountersTitle" } }
+  if view.count and view.count > 1 then
+    local room = width - vim.fn.strdisplaywidth(title_text)
+    local position = ("  %d/%d"):format(view.index or 1, view.count)
+    -- The key hint goes first when the panel is too narrow for it
+    local hint = position .. "  <Tab> next"
+    table.insert(
+      title,
+      { vim.fn.strdisplaywidth(hint) <= room and hint or M.fit(position, room), "DotnetCountersMuted" }
+    )
+  end
+  b:add(title)
+  local status = status_icon[view.status] .. view.status
+  local process = view.pid and ("  %s · pid %d"):format(view.name or "process", view.pid) or ""
   b:add({
-    { status_icon[view.status] .. view.status, status_hl[view.status] },
-    { view.pid and ("  %s · pid %d"):format(view.name or "process", view.pid) or "", "DotnetCountersMuted" },
+    { status, status_hl[view.status] },
+    { M.fit(process, width - vim.fn.strdisplaywidth(status)), "DotnetCountersMuted" },
   })
+  -- Under the status it explains, before the other processes
   if view.message then
-    b:add({ { view.message, "DotnetCountersMuted" } })
+    b:add({ { M.fit(view.message, width), "DotnetCountersMuted" } })
+  end
+  -- The other processes listed (collecting or stopped), one line each
+  for _, other in ipairs(view.others or {}) do
+    local icon = status_icon[other.status] or ""
+    local other_label = M.fit(("%s · pid %d"):format(other.name or "process", other.pid), width - 4)
+    b:add({ { "  " .. icon, status_hl[other.status] }, { other_label, "DotnetCountersMuted" } })
   end
   b:blank()
 

@@ -16,7 +16,7 @@ local uv = vim.uv or vim.loop
 ---@field refresh_interval integer seconds
 ---@field max_file_size integer bytes
 ---@field on_events fun(events: DotnetCountersEvent[])
----@field on_exit fun(code: integer, stderr: string)
+---@field on_exit fun(err: string?) err is why it failed, nil when the process just ended
 
 ---@class DotnetCountersCollector
 ---@field private opts DotnetCountersCollectorOpts
@@ -29,6 +29,31 @@ local uv = vim.uv or vim.loop
 ---@field private rotating boolean
 local Collector = {}
 Collector.__index = Collector
+
+--- Why `dotnet-counters collect` failed, from its exit and what it printed; nil when it just
+--- ended (the target process exited). It reports errors either as "Error: ..." or as an
+--- unhandled .NET exception, whose innermost "---> Type: message" says what went wrong.
+---@param code integer
+---@param signal integer
+---@param output string
+---@return string?
+function M.failure(code, signal, output)
+  if code == 0 and signal == 0 then
+    return nil
+  end
+  -- "Error: ...", "[ERROR] ...": the word on its own, not inside a type name
+  local msg = output:match("%f[%a][Ee][Rr][Rr][Oo][Rr]%f[%A]%]?:?%s*([^\n]*%S)")
+  if not msg then
+    for inner in output:gmatch("%-%-%->%s*[%w%.`]+:%s*([^\n]*%S)") do
+      msg = inner
+    end
+  end
+  msg = msg or output:match("Unhandled exception:%s*[%w%.`]+:%s*([^\n]*%S)") or output:match("([^\n]*%S)")
+  if msg then
+    return vim.trim(msg)
+  end
+  return signal ~= 0 and ("killed by signal %d"):format(signal) or ("exited with code %d"):format(code)
+end
 
 --- Resolve the dotnet-counters executable: explicit config, PATH, then the global tools dir.
 ---@param cmd string?
@@ -47,6 +72,7 @@ function M.find_cmd(cmd)
   end
 end
 
+--- Start collecting. Throws when the process cannot be spawned.
 ---@param opts DotnetCountersCollectorOpts
 ---@return DotnetCountersCollector
 function M.start(opts)
@@ -104,7 +130,7 @@ function Collector:spawn()
       end
       self:cleanup()
       if not self.stopping then
-        o.on_exit(result.code, table.concat(stderr))
+        o.on_exit(M.failure(result.code, result.signal or 0, table.concat(stderr)))
       end
     end)
   end)
@@ -162,7 +188,10 @@ end
 
 --- Stop collecting. SIGINT lets dotnet-counters close the EventPipe session cleanly,
 --- otherwise the next attach to the same process can fail with "concurrent sessions".
-function Collector:stop()
+--- With `wait` (Neovim is exiting, so a deferred kill would never run) it blocks until the
+--- process is gone, killing it after 2 s.
+---@param wait boolean?
+function Collector:stop(wait)
   if self.stopping then
     return
   end
@@ -170,11 +199,15 @@ function Collector:stop()
   if self.proc and not self.proc:is_closing() then
     self.proc:kill("sigint")
     local proc = self.proc
-    vim.defer_fn(function()
-      if not proc:is_closing() then
-        proc:kill("sigkill")
-      end
-    end, 3000)
+    if wait then
+      proc:wait(2000)
+    else
+      vim.defer_fn(function()
+        if not proc:is_closing() then
+          proc:kill("sigkill")
+        end
+      end, 3000)
+    end
   end
   self:cleanup()
 end

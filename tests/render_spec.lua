@@ -134,6 +134,47 @@ describe("panel content", function()
     assert.is_true(has_http("aspnet8.json"))
   end)
 
+  it("lists the other processes under the header, inside the panel", function()
+    local lines = render.build(metrics.new(10), {
+      status = "running",
+      pid = 100,
+      name = "Api",
+      index = 1,
+      count = 3,
+      others = {
+        { pid = 200, name = "Worker", status = "paused" },
+        { pid = 300, name = "A.Very.Long.Service.Name.That.Does.Not.Fit", status = "stopped" },
+      },
+    }, { width = 46, graph_height = 2 })
+    assert.matches("1/3  <Tab> next", lines[1].text)
+    assert.equals("  ⏸ Worker · pid 200", lines[3].text)
+    assert.matches("^  ■ A%.Very.*…$", lines[4].text)
+    for _, line in ipairs(lines) do
+      assert.is_true(vim.fn.strdisplaywidth(line.text) <= 44, line.text)
+    end
+  end)
+
+  it("keeps the header inside a narrow panel, the key hint going first", function()
+    local view = {
+      status = "error",
+      pid = 100,
+      name = "A.Very.Long.Service.Name",
+      message = "Process 100 is not running, and this message is longer than the panel",
+      index = 2,
+      count = 12,
+      others = { { pid = 200, name = "Worker", status = "running" } },
+    }
+    local wide = render.build(metrics.new(10), view, { width = 46, graph_height = 2 })
+    assert.matches("2/12  <Tab> next", wide[1].text)
+    local lines = render.build(metrics.new(10), view, { width = 24, graph_height = 2 })
+    assert.matches("2/12$", lines[1].text)
+    assert.matches("^Process 100", lines[3].text, "the message is under the status it explains")
+    assert.matches("Worker", lines[4].text)
+    for _, line in ipairs(lines) do
+      assert.is_true(vim.fn.strdisplaywidth(line.text) <= 22, line.text)
+    end
+  end)
+
   it("says it is waiting before the first sample", function()
     local lines = render.build(metrics.new(10), { status = "starting" }, { width = 46, graph_height = 2 })
     assert.matches("Waiting", lines[#lines].text)
