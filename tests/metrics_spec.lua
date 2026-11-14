@@ -172,7 +172,7 @@ describe("metrics state", function()
   it("caps the history", function()
     local state = metrics.new(3)
     for i = 1, 5 do
-      state:add({ { name = "Working Set (MB)", tags = "", value = i, timestamp = "" } })
+      state:add({ { provider = "System.Runtime", name = "Working Set (MB)", tags = "", value = i, timestamp = "" } })
       state:commit()
     end
     assert.same({ 3 * MB, 4 * MB, 5 * MB }, state.history.working_set)
@@ -182,9 +182,9 @@ describe("metrics state", function()
   it("starts a new tick when a counter repeats", function()
     local state = metrics.new(10)
     local committed = state:add({
-      { name = "Working Set (MB)", tags = "", value = 1, timestamp = "" },
-      { name = "CPU Usage (%)", tags = "", value = 5, timestamp = "" },
-      { name = "Working Set (MB)", tags = "", value = 2, timestamp = "" },
+      { provider = "System.Runtime", name = "Working Set (MB)", tags = "", value = 1, timestamp = "" },
+      { provider = "System.Runtime", name = "CPU Usage (%)", tags = "", value = 5, timestamp = "" },
+      { provider = "System.Runtime", name = "Working Set (MB)", tags = "", value = 2, timestamp = "" },
     })
     assert.is_true(committed)
     assert.equals(1, state.samples)
@@ -197,5 +197,195 @@ describe("metrics state", function()
     assert.equals(0, state.samples)
     assert.same({}, state.current)
     assert.same({}, state.history.cpu)
+  end)
+end)
+
+describe("custom meters", function()
+  local evs = events("custom10.json")
+  local state = load("custom10.json")
+
+  local function entry(st, name, tags)
+    for _, c in ipairs(st.custom) do
+      if c.name == name and c.tags == (tags or "") then
+        return c
+      end
+    end
+  end
+
+  local function only(list, tags)
+    return vim.tbl_filter(function(e)
+      return e.tags == tags
+    end, list)
+  end
+
+  --- Feed ticks of events of provider "App" (or the one given), one add() per tick.
+  local function ticks(list, opts)
+    local st = metrics.new(opts and opts.history or 10, opts)
+    for _, tick in ipairs(list) do
+      local batch = {}
+      for _, e in ipairs(tick) do
+        table.insert(batch, {
+          provider = e.provider or "App",
+          name = e[1],
+          tags = e.tags or "",
+          value = e[2],
+          timestamp = "",
+        })
+      end
+      st:add(batch)
+      st:commit()
+    end
+    return st
+  end
+
+  it("reads the unit from the last parenthesis of the name", function()
+    assert.same(
+      { base = "orders.processed", unit = "{order}", rate = true, interval = 1 },
+      metrics.unit("orders.processed ({order} / 1 sec)")
+    )
+    assert.same({ base = "orders.duration", unit = "s", rate = false }, metrics.unit("orders.duration (s)"))
+    assert.same(
+      { base = "Request Rate", unit = "Count", rate = true, interval = 1 },
+      metrics.unit("Request Rate (Count / 1 sec)")
+    )
+    assert.same({ base = "jobs", unit = "{job}", rate = true, interval = 2 }, metrics.unit("jobs ({job} / 2 sec)"))
+    assert.same(
+      { base = "POH (Pinned Object Heap) Size", unit = "B", rate = false },
+      metrics.unit("POH (Pinned Object Heap) Size (B)")
+    )
+    assert.same({ base = "plain", rate = false }, metrics.unit("plain"))
+  end)
+
+  it("keeps one entry per instrument and tag set, from other providers only", function()
+    assert.equals(9, #state.custom)
+    for _, c in ipairs(state.custom) do
+      assert.equals("MyCompany.Orders", c.provider)
+    end
+    local processed = entry(state, "orders.processed", "region=eu")
+    assert.equals("{order}", processed.unit)
+    assert.is_true(processed.rate)
+    assert.equals(last(only(evs, "region=eu"), "orders.processed"), processed.value)
+    assert.is_false(entry(state, "orders.queue.length").rate)
+    assert.equals(6, #vim.tbl_filter(function(c)
+      return c.tags ~= ""
+    end, state.custom))
+  end)
+
+  it("keeps the ticks the runtime counters make", function()
+    assert.equals(count(evs, "orders.queue.length"), state.samples)
+    local runtime = metrics.new(100)
+    runtime:add(vim.tbl_filter(function(e)
+      return e.provider == "System.Runtime"
+    end, evs))
+    runtime:commit()
+    assert.same(runtime.history.working_set, state.history.working_set)
+  end)
+
+  it("keeps the 95th percentile of a histogram", function()
+    local duration = entry(state, "orders.duration", "region=us")
+    assert.equals("95", duration.percentile)
+    assert.equals(last(only(evs, "region=us,Percentile=95"), "orders.duration"), duration.value)
+    local alone = ticks({ { { "lat (s)", 0.5, tags = "Percentile=95" }, { "lat (s)", 0.9, tags = "Percentile=99" } } })
+    assert.same({ "", "95", 0.5 }, { alone.custom[1].tags, alone.custom[1].percentile, alone.custom[1].value })
+  end)
+
+  it("only takes Percentile as a whole tag", function()
+    local st = ticks({ { { "slo.target", 3, tags = "SloPercentile=99" } } })
+    assert.equals(1, #st.custom)
+    assert.equals("SloPercentile=99", st.custom[1].tags)
+    assert.is_nil(st.custom[1].percentile)
+  end)
+
+  it("brings a rate over a longer interval to per second", function()
+    local st = ticks({ { { "jobs ({job} / 2 sec)", 10 } } })
+    assert.equals(5, st.custom[1].value)
+    assert.is_true(st.custom[1].rate)
+  end)
+
+  it("keeps two instruments whose names only differ inside parentheses apart", function()
+    local st = ticks({ { { "Pool (primary) Wait (ms)", 1 }, { "Pool (replica) Wait (ms)", 99 } } })
+    assert.equals(2, #st.custom)
+  end)
+
+  it("sends an app meter named like a runtime counter to Custom", function()
+    local st = ticks({ { { "dotnet.exceptions ({exception} / 1 sec)", 4 }, { "Working Set (MB)", 3 } } })
+    assert.equals(2, #st.custom)
+    assert.is_nil(st.current.exceptions)
+    assert.is_nil(st.current.working_set)
+  end)
+
+  it("puts other Microsoft providers in Custom", function()
+    local st = ticks({
+      { { "kestrel.active_connections ({connection})", 2, provider = "Microsoft.AspNetCore.Server.Kestrel" } },
+    })
+    assert.equals("kestrel.active_connections", st.custom[1].name)
+  end)
+
+  it("leaves out NaN, infinities and events without a provider", function()
+    local st = metrics.new(10)
+    st:add({
+      { provider = "App", name = "a", tags = "", value = 0 / 0, timestamp = "" },
+      { provider = "App", name = "b", tags = "", value = math.huge, timestamp = "" },
+      { name = "c", tags = "", value = 1, timestamp = "" },
+      { provider = "App", name = "d", tags = "", value = 1, timestamp = "" },
+    })
+    st:commit()
+    assert.same(
+      { "d" },
+      vim.tbl_map(function(c)
+        return c.name
+      end, st.custom)
+    )
+  end)
+
+  it("counts the tag sets over the limit instead of keeping them", function()
+    local limited = metrics.new(100, { max_tag_sets = 2 })
+    limited:add(evs)
+    limited:commit()
+    assert.equals(1, limited.custom_dropped["MyCompany.Orders\0orders.processed"])
+    assert.equals(1, limited.custom_dropped["MyCompany.Orders\0orders.duration"])
+    assert.equals(7, #limited.custom)
+  end)
+
+  it("puts a rate and an idle histogram to zero when a tick misses them, and keeps a value", function()
+    local st = metrics.new(10)
+    local function ev(name, value, tags)
+      return { provider = "App", name = name, tags = tags or "", value = value, timestamp = "" }
+    end
+    st:add({
+      ev("jobs ({job} / 1 sec)", 3),
+      ev("queue ({job})", 7),
+      ev("lat (s)", 0.8, "Percentile=95"),
+      -- The queue again: the first tick closes, the second has no jobs nor latency
+      ev("queue ({job})", 7),
+      ev("other", 1),
+    })
+    st:commit()
+    assert.equals(2, st.samples)
+    assert.same({ 3, 0 }, entry(st, "jobs").history)
+    assert.same({ 7, 7 }, entry(st, "queue").history)
+    assert.same({ 0.8, 0 }, entry(st, "lat").history)
+    assert.same({ 1 }, entry(st, "other").history, "an entry made in the second tick")
+  end)
+
+  it("caps the history of custom entries", function()
+    local list = {}
+    for i = 1, 5 do
+      list[i] = { { "queue ({job})", i } }
+    end
+    assert.same({ 3, 4, 5 }, ticks(list, { history = 3 }).custom[1].history)
+  end)
+
+  it("forgets custom entries on reset, and counts them again", function()
+    local limited = metrics.new(100, { max_tag_sets = 2 })
+    limited:add(evs)
+    limited:commit()
+    limited:reset()
+    assert.same({}, limited.custom)
+    assert.same({}, limited.custom_dropped)
+    limited:add(evs)
+    limited:commit()
+    assert.equals(7, #limited.custom)
+    assert.equals(1, limited.custom_dropped["MyCompany.Orders\0orders.processed"])
   end)
 end)

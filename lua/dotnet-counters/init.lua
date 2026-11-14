@@ -16,6 +16,15 @@ M.default_config = {
   max_file_size = 32 * 1024 * 1024,
   -- Samples kept for the graphs
   history = 200,
+  -- Counters of providers other than System.Runtime and Microsoft.AspNetCore.Hosting (your own
+  -- meters, added to `counters`) go to the Custom section, one line per tag set with a sparkline
+  custom = {
+    -- Tag sets shown per instrument, the first ones seen; the others are counted in a
+    -- "+N more" line
+    max_tag_sets = 5,
+    -- Instruments that get a full graph instead of a line, e.g. { "orders.processed" }
+    graphs = {},
+  },
   dap = {
     -- Attach and open the panel when a debug session of one of these adapters starts a process
     enabled = true,
@@ -43,7 +52,11 @@ M.default_config = {
 ---@type DotnetCountersConfig
 M.config = vim.deepcopy(M.default_config)
 
-local state = metrics.new(M.config.history)
+local function new_state()
+  return metrics.new(M.config.history, { max_tag_sets = M.config.custom.max_tag_sets })
+end
+
+local state = new_state()
 ---@type DotnetCountersView
 local view = { status = "stopped" }
 ---@type DotnetCountersCollector?
@@ -61,7 +74,11 @@ local idle_timer
 local uv = vim.uv or vim.loop
 
 local function redraw()
-  panel.draw(state, view, { graph_height = M.config.window.graph_height, thresholds = M.config.thresholds })
+  panel.draw(state, view, {
+    graph_height = M.config.window.graph_height,
+    thresholds = M.config.thresholds,
+    custom_graphs = M.config.custom.graphs,
+  })
 end
 
 local function reset()
@@ -138,7 +155,7 @@ function M.attach(pid, name)
   end
   M.detach()
   owner = nil
-  state = metrics.new(M.config.history)
+  state = new_state()
   view = { status = "starting", pid = pid, name = name }
   panel.open(M.config.window, reset)
   redraw()
@@ -294,7 +311,31 @@ end
 ---@param opts DotnetCountersConfig?
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", vim.deepcopy(M.default_config), opts or {})
-  state = metrics.new(M.config.history)
+  local custom = M.config.custom
+  local ok, err = pcall(vim.validate, {
+    ["custom.max_tag_sets"] = {
+      custom.max_tag_sets,
+      function(n)
+        return type(n) == "number" and n >= 1 and n == math.floor(n)
+      end,
+      "an integer of at least 1",
+    },
+    ["custom.graphs"] = { custom.graphs, "table" },
+  })
+  if not ok then
+    vim.notify(
+      ("dotnet-counters: %s; using the default"):format(err),
+      vim.log.levels.WARN,
+      { title = "dotnet-counters" }
+    )
+    if type(custom.graphs) ~= "table" then
+      custom.graphs = {}
+    end
+    if not (type(custom.max_tag_sets) == "number" and custom.max_tag_sets >= 1) then
+      custom.max_tag_sets = M.default_config.custom.max_tag_sets
+    end
+  end
+  state = new_state()
   if package.loaded["dap"] then
     M.hook_dap()
   else
