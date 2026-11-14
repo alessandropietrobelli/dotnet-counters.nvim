@@ -72,7 +72,7 @@ describe("graph colours", function()
   it("keep a steady memory graph green although it fills the height", function()
     local state = metrics.new(10)
     for _ = 1, 5 do
-      state:add({ { name = "Working Set (MB)", tags = "", value = 300, timestamp = "" } })
+      state:add({ { provider = "System.Runtime", name = "Working Set (MB)", tags = "", value = 300, timestamp = "" } })
       state:commit()
     end
     local lines = render.build(state, { status = "running" }, {
@@ -153,6 +153,27 @@ describe("panel content", function()
     return out
   end
 
+  --- A state with one tick of the given custom events, of provider "App".
+  local function custom_state(list, opts)
+    local state = metrics.new(10, opts)
+    local batch = {}
+    for _, e in ipairs(list) do
+      table.insert(batch, { provider = "App", name = e[1], tags = e.tags or "", value = e[2], timestamp = "" })
+    end
+    state:add(batch)
+    state:commit()
+    return state
+  end
+
+  local function fits(lines, width)
+    for _, line in ipairs(lines) do
+      assert.is_true(
+        vim.fn.strdisplaywidth(line) <= width,
+        ("%d > %d: %s"):format(vim.fn.strdisplaywidth(line), width, line)
+      )
+    end
+  end
+
   it("shows other providers' counters in a Custom section, one line per tag set", function()
     local lines = custom_lines(state_from("custom10.json"))
     local text = table.concat(lines, "\n")
@@ -163,48 +184,104 @@ describe("panel content", function()
     assert.matches("\norders%.payload%.size +[\128-\255 ]+ +[%d.]+ KB/s", text)
     assert.matches("\norders%.queue%.length +[\128-\255 ]+ +%d+\n", text)
     assert.not_matches("fragmentation", text, "System.Runtime counters the panel has no section for")
-    assert.is_nil(table.concat(custom_lines(state_from("net10.json")), ""):find("Custom"))
+    assert.same({}, custom_lines(state_from("net10.json")))
   end)
 
-  it("lines the values up and limits the tag sets shown", function()
+  it("lines the sparklines and the values up, and limits the tag sets shown", function()
     local text = table.concat(vim.fn.readfile(root .. "/fixtures/custom10.json"), "\n")
     local state = metrics.new(50, { max_tag_sets = 2 })
     state:add(parser.new():feed(text))
     state:commit()
     local lines = custom_lines(state)
-    local ends = {}
+    local starts, ends = {}, {}
     for _, line in ipairs(lines) do
-      if line:find("[\128-\255]") then
+      local at = line:find("[\128-\255]")
+      if at and not line:find("^Custom") then
+        starts[vim.fn.strdisplaywidth(line:sub(1, at - 1))] = true
         ends[vim.fn.strdisplaywidth(line)] = true
       end
     end
+    assert.equals(1, vim.tbl_count(starts), "sparklines start in one column")
     assert.same({ [44] = true }, ends)
     assert.equals(2, #vim.tbl_filter(function(l)
       return l == "  +1 more"
     end, lines))
   end)
 
-  it("draws a full graph for the instruments asked for", function()
-    local lines = custom_lines(state_from("custom10.json"), { custom_graphs = { "orders.queue.length" } })
+  it("draws a full graph for the instruments asked for, by name with or without the unit", function()
+    for _, name in ipairs({ "orders.queue.length", "orders.queue.length ({order})" }) do
+      local lines = custom_lines(state_from("custom10.json"), { custom_graphs = { name } })
+      local found = false
+      for i, line in ipairs(lines) do
+        if line:find("^orders%.queue%.length") then
+          assert.not_matches("[\128-\255]", line, "no sparkline on the value line")
+          assert.matches("^[ \128-\255]+$", lines[i + 1])
+          assert.matches("^[ \128-\255]+$", lines[i + 2])
+          found = true
+        end
+      end
+      assert.is_true(found, name)
+    end
+  end)
+
+  it("draws a graph for each tag set of a graphed instrument", function()
+    local lines = custom_lines(state_from("custom10.json"), { custom_graphs = { "orders.processed" } })
     for i, line in ipairs(lines) do
-      if line:find("^orders%.queue%.length") then
-        assert.not_matches("[\128-\255]", line, "no sparkline on the value line")
-        assert.matches("^[ \128-\255]+$", lines[i + 1])
-        assert.matches("^[ \128-\255]+$", lines[i + 2])
+      if line == "orders.processed" then
+        for k = 0, 2 do
+          assert.matches("^  region=%a+ +%d+/s$", lines[i + 1 + k * 3])
+          assert.matches("^[ \128-\255]+$", lines[i + 2 + k * 3])
+        end
         return
       end
     end
-    error("orders.queue.length not shown")
+    error("orders.processed not shown")
+  end)
+
+  it("keeps long names, tags and values inside the panel", function()
+    local long = "a.really.long.instrument.name.that.goes.on.and.on.forever"
+    local state = custom_state({
+      { long .. " ({x})", 1, tags = "k=v" },
+      { long .. " ({x})", 2, tags = "tenant=一二三四五六七八九十一二三四五六七八九十" },
+      { "short (s)", 0.012, tags = "Percentile=95" },
+      { "big ({x} / 1 sec)", 1234567890 },
+    })
+    -- The panel's content is never narrower than 20 columns
+    for _, width in ipairs({ 46, 30, 22 }) do
+      fits(custom_lines(state, { width = width }), width - 2)
+      fits(custom_lines(state, { width = width, custom_graphs = { long } }), width - 2)
+    end
+    local text = table.concat(custom_lines(state), "\n")
+    assert.matches("…", text)
+  end)
+
+  it("drops the sparklines rather than the values when the panel is narrow", function()
+    local lines = custom_lines(custom_state({ { "big ({x} / 1 sec)", 1234567890 } }), { width = 24 })
+    assert.matches("1,234,567,890/s$", lines[2])
+    assert.not_matches("[\128-\255]", lines[2])
   end)
 end)
 
 describe("custom values", function()
   it("are read in their unit", function()
     assert.equals("1.5 KB/s", render.value(1536, "By", true))
+    assert.equals("512 B", render.value(512, "B", false))
     assert.equals("12 ms", render.value(0.012, "s", false))
     assert.equals("12 ms", render.value(12, "ms", false))
+    assert.equals("2 ms", render.value(1500 + 500, "us", false))
     assert.equals("7.5%", render.value(7.5, "%", false))
     assert.equals("1,234/s", render.value(1234, "{order}", true))
+    assert.equals("12", render.value(12, "Count", false))
+    assert.equals("3 KiBy", render.value(3, "KiBy", false), "an unknown unit is written out")
+  end)
+
+  it("keep small, negative and large numbers readable", function()
     assert.equals("0.25", render.value(0.25, nil, false))
+    assert.equals("0.004/s", render.value(0.004, nil, true))
+    assert.equals("-123", render.value(-123, nil, false))
+    assert.equals("-1,234", render.value(-1234, "{x}", false))
+    assert.equals("-512 B", render.value(-512, "By", false))
+    assert.equals("123", render.value(123.4, nil, false))
+    assert.equals("9,007,199,254,740,992", render.value(2 ^ 53, nil, false))
   end)
 end)

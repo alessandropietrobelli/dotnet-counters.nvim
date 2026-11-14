@@ -19,7 +19,8 @@ M.default_config = {
   -- Counters of providers other than System.Runtime and Microsoft.AspNetCore.Hosting (your own
   -- meters, added to `counters`) go to the Custom section, one line per tag set with a sparkline
   custom = {
-    -- Tag sets shown per instrument; the others are counted in a "+N more" line
+    -- Tag sets shown per instrument, the first ones seen; the others are counted in a
+    -- "+N more" line
     max_tag_sets = 5,
     -- Instruments that get a full graph instead of a line, e.g. { "orders.processed" }
     graphs = {},
@@ -310,6 +311,30 @@ end
 ---@param opts DotnetCountersConfig?
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", vim.deepcopy(M.default_config), opts or {})
+  local custom = M.config.custom
+  local ok, err = pcall(vim.validate, {
+    ["custom.max_tag_sets"] = {
+      custom.max_tag_sets,
+      function(n)
+        return type(n) == "number" and n >= 1 and n == math.floor(n)
+      end,
+      "an integer of at least 1",
+    },
+    ["custom.graphs"] = { custom.graphs, "table" },
+  })
+  if not ok then
+    vim.notify(
+      ("dotnet-counters: %s; using the default"):format(err),
+      vim.log.levels.WARN,
+      { title = "dotnet-counters" }
+    )
+    if type(custom.graphs) ~= "table" then
+      custom.graphs = {}
+    end
+    if not (type(custom.max_tag_sets) == "number" and custom.max_tag_sets >= 1) then
+      custom.max_tag_sets = M.default_config.custom.max_tag_sets
+    end
+  end
   state = new_state()
   if package.loaded["dap"] then
     M.hook_dap()

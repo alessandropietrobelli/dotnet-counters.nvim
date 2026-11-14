@@ -94,7 +94,8 @@ require("dotnet-counters").setup({
   -- Counters of providers other than System.Runtime and Microsoft.AspNetCore.Hosting (your own
   -- meters, added to `counters`) go to the Custom section, one line per tag set with a sparkline
   custom = {
-    -- Tag sets shown per instrument; the others are counted in a "+N more" line
+    -- Tag sets shown per instrument, the first ones seen; the others are counted in a
+    -- "+N more" line
     max_tag_sets = 5,
     -- Instruments that get a full graph instead of a line, e.g. { "orders.processed" }
     graphs = {},
@@ -129,27 +130,39 @@ require("dotnet-counters").setup({
 Every provider in `counters` other than `System.Runtime` and `Microsoft.AspNetCore.Hosting` goes
 to a Custom section at the bottom of the panel: your own `System.Diagnostics.Metrics` meters, or
 built-in ones the panel has no section for, such as `Microsoft.AspNetCore.Server.Kestrel` or
-`System.Net.Http`.
+`System.Net.Http`. Counters of `System.Runtime` and `Microsoft.AspNetCore.Hosting` that the panel
+has no row for (JIT, heap fragmentation…) are not shown.
+
+With `custom = { max_tag_sets = 2 }`:
 
 ```
 Custom ─────────────────────────────────────
-orders.processed
-  region=eu               ▇▇▄▇▇█▄       11/s
-  region=us               ▄█▅██▇█       15/s
-  +1 more
 orders.duration
-  region=eu               █▇█▇▆█▇ p95 275 ms
-orders.payload.size       ▇█▆██▇▇   115 KB/s
-orders.queue.length       ▅▃█▇▂▄▅         15
+  region=us            ▆█▇█▇█▇▆█▇ p95 275 ms
+  region=asia          ██▇██▇███▇ p95 276 ms
+  +1 more
+orders.queue.length    ▄▃▆▇▃██▄▃▆         15
+orders.payload.size    █▇▇▇█▆██▇▇   115 KB/s
+orders.processed
+  region=us            ▇█▄▇▇▄▇▇█▄       11/s
+  region=asia          █▇█▄█▅██▇█       15/s
+  +1 more
 ```
 
-- **One line per instrument and tag set**, up to `custom.max_tag_sets`, with the last value and a
-  sparkline of the recent ones. An instrument with tags gets its name on a line of its own.
-- **Units** come from the suffix `dotnet-counters` adds to the name: `By` reads as bytes, `s` and
-  `ms` as durations, `%` as a percentage, anything else (`{order}`) as a number. A counter
-  (`/ 1 sec`) is shown per second.
-- **Histograms** show their 95th percentile.
-- **`custom.graphs`** lists the instruments that get a full graph, like CPU and memory.
+- **One line per instrument and tag set**, with the last value and a sparkline of the recent
+  ones. An instrument with tags gets its name on a line of its own, and each tag set
+  (`region=eu,status=ok`) is shortened with `…` when it does not fit.
+- **`custom.max_tag_sets`** tag sets are shown per instrument, the first ones seen; the others are
+  counted in a `+N more` line.
+- **Units** come from the suffix `dotnet-counters` adds to the name: `By` reads as bytes, `s`,
+  `ms`, `us` and `ns` as durations, `%` as a percentage, `{order}` as a plain number; any other
+  unit is written after the number. A counter (`/ 1 sec`, or `/ 2 sec` with `refresh_interval = 2`)
+  is shown per second, and as 0 in a sample where nothing was counted.
+- **Histograms** show their 95th percentile, and 0 in a sample where nothing was recorded.
+- **Up/down counters** are reported by `dotnet-counters` as the change since the last sample (see
+  Limitations): to see a level, such as a queue length, publish an observable gauge.
+- **`custom.graphs`** lists instrument names (without the unit, e.g. `orders.processed`) that get
+  a full graph instead of a line, one per tag set. Their graphs have no thresholds.
 
 ### Highlights
 

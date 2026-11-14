@@ -140,26 +140,32 @@ local BUILTIN = { ["System.Runtime"] = true, ["Microsoft.AspNetCore.Hosting"] = 
 ---@class DotnetCountersUnit
 ---@field base string name without the suffix
 ---@field unit string? "By", "s", "{order}", "Count"…
----@field rate boolean per second
+---@field rate boolean a count per interval, shown per second
+---@field interval number? seconds the count covers, for a rate
 
 --- Name and unit of a counter, from the suffix dotnet-counters adds to the name:
---- "orders.processed ({order} / 1 sec)" is a rate of {order}, "orders.duration (s)" a value in seconds.
+--- "orders.processed ({order} / 1 sec)" counts {order} over one second, "orders.duration (s)" is
+--- a value in seconds. The suffix is the last parenthesis, so "POH (Pinned Object Heap) Size (B)"
+--- keeps its name whole.
 ---@param name string
 ---@return DotnetCountersUnit
 function M.unit(name)
-  local base, suffix = name:match("^(.-) %((.*)%)$")
+  local base, suffix = name:match("^(.*) %(([^()]*)%)$")
   if not base then
     return { base = name, rate = false }
   end
-  local per_second = suffix:match("^(.-)%s*/%s*1 sec$")
-  return { base = base, unit = per_second or suffix, rate = per_second ~= nil }
+  local unit, seconds = suffix:match("^(.-)%s*/%s*(%d*%.?%d+) sec$")
+  if unit then
+    return { base = base, unit = unit ~= "" and unit or nil, rate = true, interval = tonumber(seconds) }
+  end
+  return { base = base, unit = suffix, rate = false }
 end
 
 ---@class DotnetCountersCustom
 ---@field provider string
 ---@field name string instrument name, without the unit
 ---@field unit string?
----@field rate boolean
+---@field rate boolean per second
 ---@field tags string tag set, without the histogram's Percentile
 ---@field percentile string? "95" for a histogram: its 95th percentile is what is kept
 ---@field value number latest
@@ -179,11 +185,12 @@ local TOTALS = { "gen0", "gen1", "gen2", "exceptions" }
 ---@field routes table[] slowest routes of the last tick
 ---@field peak table<string, number>
 ---@field custom DotnetCountersCustom[] counters of other providers, in the order they first came
----@field custom_dropped table<string, integer> by "provider\0name": tag sets over the limit
+---@field custom_dropped table<string, integer> by "provider\0name": the most tag sets over the limit in one tick
 ---@field samples integer
 ---@field max_history integer
 ---@field max_tag_sets integer
----@field private custom_by_id table<string, DotnetCountersCustom|false> false: over the tag set limit
+---@field private custom_by_id table<string, DotnetCountersCustom>
+---@field private custom_sets table<string, integer> by "provider\0name": tag sets kept
 ---@field private tick table?
 ---@field private seen table<string, true> counters already in the tick being filled
 local State = {}
@@ -213,6 +220,7 @@ function State:reset()
   self.peak = {}
   self.custom = {}
   self.custom_by_id = {}
+  self.custom_sets = {}
   self.custom_dropped = {}
   self.samples = 0
   self.tick = nil
@@ -236,7 +244,7 @@ function State:commit()
   end
 
   for key, value in pairs(t) do
-    if key ~= "routes" and key ~= "exception_types" and key ~= "custom" then
+    if key ~= "routes" and key ~= "exception_types" and key ~= "custom" and key ~= "dropped" then
       self.current[key] = value
     end
   end
@@ -249,6 +257,9 @@ function State:commit()
   for kind, count in pairs(t.exception_types or {}) do
     self.exception_types[kind] = (self.exception_types[kind] or 0) + count
   end
+  for instrument, n in pairs(t.dropped or {}) do
+    self.custom_dropped[instrument] = math.max(self.custom_dropped[instrument] or 0, n)
+  end
   if t.routes then
     table.sort(t.routes, function(a, b)
       return a.p95 > b.p95
@@ -256,12 +267,13 @@ function State:commit()
     self.routes = t.routes
   end
 
-  -- A rate missing from the tick had nothing to count; a value stays what it was
+  -- A rate missing from the tick had nothing to count, and a histogram nothing recorded (its
+  -- percentiles are left out then); any other value stays what it was
   local custom = t.custom or {}
   for _, c in ipairs(self.custom) do
     local value = custom[c]
     if value == nil then
-      value = c.rate and 0 or c.value
+      value = (c.rate or c.percentile) and 0 or c.value
     end
     c.value = value
     table.insert(c.history, value)
@@ -298,8 +310,14 @@ end
 function State:add(events)
   local committed = false
   for _, event in ipairs(events) do
-    local handler = HANDLERS[base_name(event.name)]
-    if not handler and not BUILTIN[event.provider] then
+    -- The runtime's own counters only from the runtime's providers: an app meter that happens to
+    -- share a name (dotnet.exceptions, http.server.active_requests) goes to Custom
+    local handler
+    if type(event.provider) ~= "string" or type(event.name) ~= "string" then
+      handler = nil
+    elseif BUILTIN[event.provider] then
+      handler = HANDLERS[base_name(event.name)]
+    else
       handler = function(t, value, tags)
         self:add_custom(t, event, value, tags)
       end
@@ -318,40 +336,48 @@ function State:add(events)
   return committed
 end
 
---- The Custom entry of an event, made on its first sample. Only the 95th percentile of a
---- histogram is kept. Nil when the instrument already has `max_tag_sets` tag sets: the extra
---- ones are counted in `custom_dropped` instead.
----@param event DotnetCountersEvent
+--- Split a tag set into its Percentile, if any, and the other tags.
 ---@param tags string
----@return DotnetCountersCustom?
-function State:custom_entry(event, tags)
-  local percentile = tags:match("Percentile=(%d+)")
-  tags = tags:gsub(",?Percentile=%d+", ""):gsub("^,", "")
-  local unit = M.unit(event.name)
-  local id = table.concat({ event.provider, unit.base, tags }, "\0")
-  local entry = self.custom_by_id[id]
-  if entry ~= nil then
-    return entry or nil
-  end
-  local instrument = event.provider .. "\0" .. unit.base
-  local sets = 0
-  for _, c in ipairs(self.custom) do
-    if c.provider == event.provider and c.name == unit.base then
-      sets = sets + 1
+---@return string? percentile, string rest
+local function split_percentile(tags)
+  local percentile
+  local rest = {}
+  for part in tags:gmatch("[^,]+") do
+    local k, v = part:match("^([^=]+)=(.*)$")
+    if k == "Percentile" then
+      percentile = v
+    else
+      table.insert(rest, part)
     end
   end
-  if sets >= self.max_tag_sets then
-    self.custom_dropped[instrument] = (self.custom_dropped[instrument] or 0) + 1
-    self.custom_by_id[id] = false
+  return percentile, table.concat(rest, ",")
+end
+
+--- The Custom entry of an instrument and tag set, made on its first sample. Nil when the
+--- instrument already has `max_tag_sets` tag sets: those over the limit are only counted.
+---@param event DotnetCountersEvent
+---@param unit DotnetCountersUnit
+---@param tags string without the Percentile
+---@param histogram boolean
+---@return DotnetCountersCustom?
+function State:custom_entry(event, unit, tags, histogram)
+  local instrument = event.provider .. "\0" .. unit.base
+  local id = instrument .. "\0" .. tags
+  local entry = self.custom_by_id[id]
+  if entry then
+    return entry
+  end
+  if (self.custom_sets[instrument] or 0) >= self.max_tag_sets then
     return nil
   end
+  self.custom_sets[instrument] = (self.custom_sets[instrument] or 0) + 1
   entry = {
     provider = event.provider,
     name = unit.base,
     unit = unit.unit,
     rate = unit.rate,
     tags = tags,
-    percentile = percentile and "95" or nil,
+    percentile = histogram and "95" or nil,
     value = 0,
     history = {},
   }
@@ -360,19 +386,32 @@ function State:custom_entry(event, tags)
   return entry
 end
 
+--- Put a counter of another provider into the tick. Of a histogram only the 95th percentile is
+--- kept; a rate over a longer interval is brought to per second; NaN and infinities are left out.
 ---@param t table the tick
 ---@param event DotnetCountersEvent
 ---@param value number
 ---@param tags string?
 function State:add_custom(t, event, value, tags)
-  local percentile = (tags or ""):match("Percentile=(%d+)")
+  if value ~= value or value == math.huge or value == -math.huge then
+    return
+  end
+  local percentile, rest = split_percentile(tags or "")
   if percentile and percentile ~= "95" then
     return
   end
-  local entry = self:custom_entry(event, tags or "")
+  local unit = M.unit(event.name)
+  if unit.rate and unit.interval and unit.interval > 0 then
+    value = value / unit.interval
+  end
+  local entry = self:custom_entry(event, unit, rest, percentile ~= nil)
   if entry then
     t.custom = t.custom or {}
     t.custom[entry] = value
+  else
+    local instrument = event.provider .. "\0" .. unit.base
+    t.dropped = t.dropped or {}
+    t.dropped[instrument] = (t.dropped[instrument] or 0) + 1
   end
 end
 
