@@ -21,8 +21,18 @@ local subcommands = {
       require("dotnet-counters").pick()
     end
   end,
-  detach = function()
-    require("dotnet-counters").detach()
+  detach = function(args)
+    if args[1] == "all" then
+      require("dotnet-counters").detach_all()
+    else
+      require("dotnet-counters").detach()
+    end
+  end,
+  next = function()
+    require("dotnet-counters").next(1)
+  end,
+  prev = function()
+    require("dotnet-counters").next(-1)
   end,
   reset = function()
     require("dotnet-counters").reset()

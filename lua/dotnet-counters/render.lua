@@ -235,6 +235,9 @@ end
 ---@field pid integer?
 ---@field status "starting"|"running"|"paused"|"stopped"|"error"
 ---@field message string?
+---@field others {pid: integer, name: string?, status: string}[]? the other processes collected
+---@field index integer? position of this process among all of them
+---@field count integer? number of processes
 
 ---@class DotnetCountersBuildOpts
 ---@field width integer
@@ -271,11 +274,21 @@ function M.build(state, view, opts)
     error = "DotnetCountersHigh",
   }
   local status_icon = { running = "● ", paused = "⏸ ", starting = "◌ ", stopped = "■ ", error = "✗ " }
-  b:add({ { "󰪚 .NET runtime", "DotnetCountersTitle" } })
+  local title = { { "󰪚 .NET runtime", "DotnetCountersTitle" } }
+  if view.count and view.count > 1 then
+    table.insert(title, { ("  %d/%d  <Tab> next"):format(view.index or 1, view.count), "DotnetCountersMuted" })
+  end
+  b:add(title)
   b:add({
     { status_icon[view.status] .. view.status, status_hl[view.status] },
     { view.pid and ("  %s · pid %d"):format(view.name or "process", view.pid) or "", "DotnetCountersMuted" },
   })
+  -- The other processes collected, one line each
+  for _, other in ipairs(view.others or {}) do
+    local icon = status_icon[other.status] or ""
+    local label = M.fit(("%s · pid %d"):format(other.name or "process", other.pid), width - 4)
+    b:add({ { "  " .. icon, status_hl[other.status] }, { label, "DotnetCountersMuted" } })
+  end
   if view.message then
     b:add({ { view.message, "DotnetCountersMuted" } })
   end

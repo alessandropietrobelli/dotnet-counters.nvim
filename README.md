@@ -17,7 +17,8 @@ with a curl loop calling a few endpoints. The demo is a script:
 
 The panel opens by itself when an [nvim-dap](https://github.com/mfussenegger/nvim-dap) session
 starts a .NET process, shows when the debugger has paused it, and closes when the session ends. It
-can also attach to any running .NET process, debugger or not.
+can also attach to any running .NET process, debugger or not, and follow several at once: an API
+and its worker, debugged together, each keep their own graphs.
 
 ## How it works
 
@@ -35,6 +36,9 @@ renders the panel once per sample.
   `"System.Runtime,Microsoft.AspNetCore.Hosting,MyCompany.Orders"`. See [Custom counters](#custom-counters).
 - **CPU** is a percentage of the whole machine (all cores), like the .NET 8 counter and Task Manager.
 - **While the debugger is stopped** the process is suspended, so the graphs pause with it.
+- **Several processes** are collected at once, one `dotnet-counters` each. The panel shows one, with
+  the others listed under its header; `<Tab>` switches. Every debug session adds its process, a
+  session that ends takes its own away, and the process that stops at a breakpoint is shown.
 
 ## Requirements
 
@@ -68,12 +72,16 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 | Command | |
 |---|---|
 | `:DotnetCounters` / `:DotnetCounters toggle` | Show or hide the panel |
-| `:DotnetCounters attach [pid]` | Attach to a process; without a pid, pick one from `dotnet-counters ps` |
-| `:DotnetCounters detach` | Stop collecting, keep the last data on screen |
+| `:DotnetCounters attach [pid]` | Add a process; without a pid, pick one from `dotnet-counters ps`. One already collected is shown |
+| `:DotnetCounters next` / `prev` | Show the next or previous process collected |
+| `:DotnetCounters detach` | Stop collecting from the process shown, keep its last data on screen |
+| `:DotnetCounters detach all` | Stop collecting from every process |
 | `:DotnetCounters reset` | Clear history, peaks and totals |
 | `:DotnetCounters open` / `close` | Open or close the panel |
 
-In the panel, `q` closes it and `r` resets the history.
+In the panel, `q` closes it, `r` resets the history of the process shown, and `<Tab>` / `<S-Tab>`
+show the next or previous process. Processes that stopped leave the list when another one is
+attached.
 
 ## Configuration
 
@@ -104,8 +112,11 @@ require("dotnet-counters").setup({
     -- Attach and open the panel when a debug session of one of these adapters starts a process
     enabled = true,
     adapters = { "coreclr", "netcoredbg" },
-    -- Close the panel when the debug session ends
+    -- When a debug session ends, take its process off the panel, and close the panel once no
+    -- process is left; false keeps it there, stopped, with its last data
     close_on_exit = true,
+    -- Show the process that stops at a breakpoint, with several debugged at once
+    follow = true,
   },
   window = {
     position = "right",
@@ -193,6 +204,8 @@ fills its height at a steady 300 MB stays green, and only turns yellow and red a
   samples land with roughly one refresh interval of lag.
 - **Temporary file.** The collector writes ~10 KB/s to a temporary file, which is restarted past
   `max_file_size` (a gap of a sample or two) and deleted when collection stops.
+- **The cost grows with each process.** Every process collected runs its own `dotnet-counters`
+  and writes its own temporary file, so three services debugged together cost three times one.
 - **Thread pool on .NET 9+.** The thread and queue counts are published as up/down counters, which
   `dotnet-counters` reports as deltas; the panel shows work items per second instead. On .NET 8
   all three are shown.

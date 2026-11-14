@@ -1,4 +1,5 @@
--- The nvim-dap hooks, with two .NET debug sessions running at once (#1).
+-- The nvim-dap hooks and the processes collected, with .NET debug sessions running at once
+-- (#1, #2).
 -- nvim-dap, the collector and the panel are replaced by fakes: what is checked is
 -- which session's events reach the panel.
 
@@ -33,10 +34,14 @@ local function session(id, pid)
 end
 
 describe("nvim-dap hooks", function()
-  local dc, dap, started, stopped, panel_open, last_view
+  local dc, dap, started, stopped, panel_open, last_view, last_state
+
+  -- The options each fake collector was started with, by pid: on_events and on_exit
+  local collectors
 
   before_each(function()
-    started, stopped, panel_open, last_view = {}, {}, false, nil
+    collectors = {}
+    started, stopped, panel_open, last_view, last_state = {}, {}, false, nil, nil
     dap = fake_dap()
     package.loaded["dap"] = dap
     package.loaded["dotnet-counters.collector"] = {
@@ -45,6 +50,7 @@ describe("nvim-dap hooks", function()
       end,
       start = function(opts)
         table.insert(started, opts.pid)
+        collectors[opts.pid] = opts
         return {
           stop = function()
             table.insert(stopped, opts.pid)
@@ -62,8 +68,8 @@ describe("nvim-dap hooks", function()
       is_open = function()
         return panel_open
       end,
-      draw = function(_, view)
-        last_view = vim.deepcopy(view)
+      draw = function(state, view)
+        last_state, last_view = state, vim.deepcopy(view)
       end,
     }
     package.loaded["dotnet-counters"] = nil
@@ -73,7 +79,7 @@ describe("nvim-dap hooks", function()
   end)
 
   after_each(function()
-    dc.detach()
+    dc.detach_all()
     for _, name in ipairs({ "dap", "dotnet-counters", "dotnet-counters.collector", "dotnet-counters.panel" }) do
       package.loaded[name] = nil
     end
@@ -90,24 +96,112 @@ describe("nvim-dap hooks", function()
     assert.are.equal(100, last_view.pid)
   end)
 
-  it("follows the session that started last", function()
+  it("collects every session's process and shows the one that started last", function()
     start(session(1, 100))
     start(session(2, 200))
     assert.are.same({ 100, 200 }, started)
-    assert.are.same({ 100 }, stopped)
+    assert.are.same({}, stopped)
+    assert.are.equal(200, last_view.pid)
+    assert.are.same({ { pid = 100, name = "App1", status = "starting" } }, last_view.others)
+    assert.are.same({ 2, 2 }, { last_view.index, last_view.count })
+  end)
+
+  it("cycles between the processes", function()
+    start(session(1, 100))
+    start(session(2, 200))
+    start(session(3, 300))
+    dc.next(1)
+    assert.are.equal(100, last_view.pid)
+    dc.next(-1)
+    assert.are.equal(300, last_view.pid)
+    dc.next(-1)
     assert.are.equal(200, last_view.pid)
   end)
 
-  it("keeps collecting when another session ends", function()
+  it("keeps each process's data apart, and draws only the one shown", function()
+    start(session(1, 100))
+    start(session(2, 200))
+    local function tick(pid, mb)
+      collectors[pid].on_events({
+        { provider = "System.Runtime", name = "Working Set (MB)", tags = "", value = mb, timestamp = "" },
+      })
+    end
+    tick(100, 1) -- running now: the header of the one shown says so
+    assert.are.equal("running", last_view.others[1].status)
+    last_view = nil
+    tick(100, 2)
+    assert.is_nil(last_view, "a sample of the process not shown does not redraw")
+    tick(200, 7)
+    tick(200, 8)
+    assert.are.equal(200, last_view.pid)
+    assert.are.equal(7 * 1024 * 1024, last_state.current.working_set)
+    dc.next()
+    assert.are.equal(1024 * 1024, last_state.current.working_set)
+  end)
+
+  it("follows the session that stops at a breakpoint", function()
     local api, worker = session(1, 100), session(2, 200)
     start(worker)
     start(api)
+    dap.fire("event_stopped", worker)
+    assert.are.equal(200, last_view.pid)
+    assert.are.equal("paused", last_view.status)
+    assert.are.same({ { pid = 100, name = "App1", status = "starting" } }, last_view.others)
+  end)
+
+  it("stays on the process shown with dap.follow off", function()
+    dc.setup({ dap = { follow = false } })
+    local api, worker = session(1, 100), session(2, 200)
+    start(worker)
+    start(api)
+    dap.fire("event_stopped", worker)
+    assert.are.equal(100, last_view.pid)
+    assert.are.same({ { pid = 200, name = "App2", status = "paused" } }, last_view.others)
+  end)
+
+  it("adds a process attached by hand, and only shows one already collected", function()
+    start(session(1, 100))
+    dc.attach(300, "Manual")
+    dc.attach(100)
+    assert.are.same({ 100, 300 }, started)
+    assert.are.equal(100, last_view.pid)
+    assert.are.equal(2, #dc.processes())
+  end)
+
+  it("takes processes that stopped off the list when another one is attached", function()
+    start(session(1, 100))
+    dc.detach()
+    assert.are.equal("stopped", last_view.status)
+    dc.attach(300, "Manual")
+    assert.are.same(
+      { 300 },
+      vim.tbl_map(function(p)
+        return p.pid
+      end, dc.processes())
+    )
+  end)
+
+  it("stops every process with detach_all", function()
+    start(session(1, 100))
+    start(session(2, 200))
+    dc.detach_all()
+    table.sort(stopped)
+    assert.are.same({ 100, 200 }, stopped)
+    assert.is_true(panel_open)
+  end)
+
+  it("keeps collecting when another session ends, and takes that one off", function()
+    local api, worker = session(1, 100), session(2, 200)
+    start(worker)
+    start(api)
+    dc.show(200)
     dap.fire("event_terminated", worker)
     dap.fire("event_exited", worker)
     dap.fire("disconnect", worker)
-    assert.are.same({ 200 }, stopped) -- only the hand-over from the worker to the api
+    assert.are.same({ 200 }, stopped)
     assert.is_true(panel_open)
-    assert.are.equal(100, last_view.pid)
+    assert.are.equal(100, last_view.pid, "the other process is shown")
+    assert.are.same({}, last_view.others)
   end)
 
   it("stops and closes when its own session ends", function()
@@ -118,12 +212,23 @@ describe("nvim-dap hooks", function()
     assert.is_false(panel_open)
   end)
 
-  it("ignores a breakpoint hit in another session", function()
+  it("pauses only the process of the session that stopped", function()
     local api, worker = session(1, 100), session(2, 200)
     start(worker)
     start(api)
     dap.fire("event_stopped", worker)
+    dc.show(100)
     assert.are_not.equal("paused", last_view.status)
+  end)
+
+  it("keeps a session's process on the panel, stopped, with close_on_exit off", function()
+    dc.setup({ dap = { close_on_exit = false } })
+    local api = session(1, 100)
+    start(api)
+    dap.fire("event_terminated", api)
+    assert.is_true(panel_open)
+    assert.are.equal("stopped", last_view.status)
+    assert.are.equal(100, last_view.pid)
   end)
 
   it("pauses and resumes with its own session", function()

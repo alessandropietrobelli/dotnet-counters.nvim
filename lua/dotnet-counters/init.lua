@@ -29,8 +29,11 @@ M.default_config = {
     -- Attach and open the panel when a debug session of one of these adapters starts a process
     enabled = true,
     adapters = { "coreclr", "netcoredbg" },
-    -- Close the panel when the debug session ends
+    -- When a debug session ends, take its process off the panel, and close the panel once no
+    -- process is left; false keeps it there, stopped, with its last data
     close_on_exit = true,
+    -- Show the process that stops at a breakpoint, with several debugged at once
+    follow = true,
   },
   window = {
     position = "right",
@@ -56,24 +59,57 @@ local function new_state()
   return metrics.new(M.config.history, { max_tag_sets = M.config.custom.max_tag_sets })
 end
 
-local state = new_state()
----@type DotnetCountersView
-local view = { status = "stopped" }
----@type DotnetCountersCollector?
-local active
--- The id of the nvim-dap session whose process is being collected, nil when the
--- collection was started by hand. Only that session's events touch the panel: with
--- two sessions running (an API and a worker), the other one must not pause it or
--- stop it.
----@type integer?
-local owner
-local last_event = 0
+---@class DotnetCountersProcess
+---@field pid integer
+---@field name string?
+---@field state DotnetCountersState
+---@field view DotnetCountersView
+---@field collector DotnetCountersCollector? nil once collection stopped
+---@field owner integer? the nvim-dap session that started it; nil when attached by hand
+---@field last_event integer uv.now() of the last event
+
+-- Every process collected, or stopped but still on screen, in the order they were attached.
+-- One `dotnet-counters collect` runs for each: the runtime accepts a single session per
+-- process, so they cannot share one. The panel shows one of them, `shown`.
+---@type DotnetCountersProcess[]
+local processes = {}
+---@type DotnetCountersProcess?
+local shown
 ---@type uv.uv_timer_t?
 local idle_timer
 
 local uv = vim.uv or vim.loop
 
+---@param pid integer
+---@return DotnetCountersProcess?, integer?
+local function find(pid)
+  for i, p in ipairs(processes) do
+    if p.pid == pid then
+      return p, i
+    end
+  end
+end
+
 local function redraw()
+  local state, view
+  if shown then
+    state = shown.state
+    -- The others, listed under the header
+    local others = {}
+    for _, p in ipairs(processes) do
+      if p ~= shown then
+        table.insert(others, { pid = p.pid, name = p.name, status = p.view.status })
+      end
+    end
+    view = vim.tbl_extend("force", shown.view, { others = others, index = nil, count = #processes })
+    for i, p in ipairs(processes) do
+      if p == shown then
+        view.index = i
+      end
+    end
+  else
+    state, view = new_state(), { status = "stopped" }
+  end
   panel.draw(state, view, {
     graph_height = M.config.window.graph_height,
     thresholds = M.config.thresholds,
@@ -81,8 +117,17 @@ local function redraw()
   })
 end
 
+---@param p DotnetCountersProcess
+local function redraw_if_shown(p)
+  if p == shown then
+    redraw()
+  end
+end
+
 local function reset()
-  state:reset()
+  if shown then
+    shown.state:reset()
+  end
   redraw()
 end
 
@@ -99,8 +144,16 @@ local function find_cmd()
   return cmd
 end
 
--- A tick is only committed when the next one starts. When the process is paused the next
--- one never comes, so commit after a quiet period to show the last sample anyway.
+local function stop_idle_timer()
+  if idle_timer then
+    idle_timer:stop()
+    idle_timer:close()
+    idle_timer = nil
+  end
+end
+
+-- A tick is only committed when the next one starts. When a process is paused the next one
+-- never comes, so commit after a quiet period to show the last sample anyway.
 local function start_idle_timer()
   if idle_timer then
     return
@@ -110,33 +163,72 @@ local function start_idle_timer()
     500,
     500,
     vim.schedule_wrap(function()
-      local quiet = uv.now() - last_event
-      if quiet > (M.config.refresh_interval * 1000 * 1.5) then
-        state:commit()
-        redraw()
+      local collecting = false
+      for _, p in ipairs(processes) do
+        if p.collector then
+          collecting = true
+          if uv.now() - p.last_event > (M.config.refresh_interval * 1000 * 1.5) then
+            p.state:commit()
+            redraw_if_shown(p)
+          end
+        end
+      end
+      if not collecting then
+        stop_idle_timer()
       end
     end)
   )
 end
 
-local function stop_idle_timer()
-  if idle_timer then
-    idle_timer:stop()
-    idle_timer:close()
-    idle_timer = nil
+--- Stop collecting from one process; it stays listed with its last data.
+---@param p DotnetCountersProcess
+local function stop(p)
+  if p.collector then
+    p.collector:stop()
+    p.collector = nil
+  end
+  if p.view.status ~= "error" then
+    p.view.status = "stopped"
   end
 end
 
---- Stop collecting. The panel stays open with the last data unless `close` is true.
+--- Take a process off the list, showing another one if it was shown: the next one still
+--- collecting, else any.
+---@param p DotnetCountersProcess
+local function remove(p)
+  stop(p)
+  local _, i = find(p.pid)
+  if i then
+    table.remove(processes, i)
+  end
+  if shown == p then
+    shown = nil
+    for _, other in ipairs(processes) do
+      if other.collector then
+        shown = other
+        break
+      end
+    end
+    shown = shown or processes[#processes]
+  end
+end
+
+---@return boolean
+local function any_collecting()
+  for _, p in ipairs(processes) do
+    if p.collector then
+      return true
+    end
+  end
+  return false
+end
+
+--- Stop collecting from the process shown. The panel stays open with its last data unless
+--- `close` is true.
 ---@param close boolean?
 function M.detach(close)
-  if active then
-    active:stop()
-    active = nil
-  end
-  stop_idle_timer()
-  if view.status ~= "error" then
-    view.status = "stopped"
+  if shown then
+    stop(shown)
   end
   if close then
     panel.close()
@@ -145,19 +237,82 @@ function M.detach(close)
   end
 end
 
---- Start collecting from a process and open the panel.
+--- Stop collecting from every process.
+---@param close boolean?
+function M.detach_all(close)
+  for _, p in ipairs(processes) do
+    stop(p)
+  end
+  stop_idle_timer()
+  if close then
+    panel.close()
+  else
+    redraw()
+  end
+end
+
+--- Show the next (or, with a negative step, the previous) process in the panel.
+---@param step integer?
+function M.next(step)
+  if #processes < 2 or not shown then
+    return
+  end
+  local _, i = find(shown.pid)
+  shown = processes[((i - 1 + (step or 1)) % #processes) + 1]
+  redraw()
+end
+
+--- Show the process `pid` in the panel, if it is listed.
+---@param pid integer
+function M.show(pid)
+  local p = find(pid)
+  if p then
+    shown = p
+    redraw()
+  end
+end
+
+--- The processes listed, in the order they were attached.
+---@return {pid: integer, name: string?, status: string, shown: boolean}[]
+function M.processes()
+  return vim.tbl_map(function(p)
+    return { pid = p.pid, name = p.name, status = p.view.status, shown = p == shown }
+  end, processes)
+end
+
+--- Start collecting from a process, next to those already collected, and show it. A process
+--- already collected is just shown; processes that stopped are taken off the list.
 ---@param pid integer
 ---@param name string?
+---@return DotnetCountersProcess?
 function M.attach(pid, name)
+  local existing = find(pid)
+  if existing and existing.collector then
+    shown = existing
+    panel.open(M.config.window, reset, M.next)
+    redraw()
+    return existing
+  end
   local cmd = find_cmd()
   if not cmd then
     return
   end
-  M.detach()
-  owner = nil
-  state = new_state()
-  view = { status = "starting", pid = pid, name = name }
-  panel.open(M.config.window, reset)
+  for i = #processes, 1, -1 do
+    if not processes[i].collector then
+      table.remove(processes, i)
+    end
+  end
+  ---@type DotnetCountersProcess
+  local p = {
+    pid = pid,
+    name = name or (existing and existing.name),
+    state = new_state(),
+    view = { status = "starting", pid = pid, name = name or (existing and existing.name) },
+    last_event = uv.now(),
+  }
+  table.insert(processes, p)
+  shown = p
+  panel.open(M.config.window, reset, M.next)
   redraw()
 
   local this
@@ -168,41 +323,47 @@ function M.attach(pid, name)
     refresh_interval = M.config.refresh_interval,
     max_file_size = M.config.max_file_size,
     on_events = function(events)
-      if active ~= this then
+      if p.collector ~= this then
         return
       end
-      last_event = uv.now()
-      if view.status == "starting" or view.status == "paused" then
-        view.status = "running"
+      p.last_event = uv.now()
+      local changed = p.view.status == "starting" or p.view.status == "paused"
+      if changed then
+        p.view.status = "running"
       end
-      if state:add(events) then
+      -- Samples redraw only the process shown; a new status also shows in the others' header
+      if p.state:add(events) and p == shown or changed then
         redraw()
       end
     end,
     on_exit = function(code, output)
-      if active ~= this then
+      if p.collector ~= this then
         return
       end
-      active = nil
-      stop_idle_timer()
-      state:commit()
+      p.collector = nil
+      p.state:commit()
       local err = output:match("[Ee]rror:?%s*([^\n]+)")
       if code ~= 0 and err then
-        view.status = "error"
-        view.message = err
-        vim.notify(err, vim.log.levels.WARN, { title = "dotnet-counters" })
+        p.view.status = "error"
+        p.view.message = err
+        vim.notify(
+          ("%s (pid %d): %s"):format(p.name or "process", p.pid, err),
+          vim.log.levels.WARN,
+          { title = "dotnet-counters" }
+        )
       else
-        view.status = "stopped"
+        p.view.status = "stopped"
       end
       redraw()
     end,
   })
-  active = this
+  p.collector = this
   start_idle_timer()
+  return p
 end
 
 function M.open()
-  panel.open(M.config.window, reset)
+  panel.open(M.config.window, reset, M.next)
   redraw()
 end
 
@@ -244,7 +405,9 @@ function M.pick()
       vim.ui.select(items, {
         prompt = "Attach .NET counters to",
         format_item = function(item)
-          return ("%d  %s  %s"):format(item.pid, item.name, item.path)
+          local collected = find(item.pid)
+          local mark = collected and collected.collector and "  (collected)" or ""
+          return ("%d  %s  %s%s"):format(item.pid, item.name, item.path, mark)
         end,
       }, function(item)
         if item then
@@ -257,7 +420,8 @@ end
 
 local dap_hooked = false
 
---- Hook into nvim-dap: attach when a .NET debuggee starts, track pause/continue, detach at the end.
+--- Hook into nvim-dap: each .NET debuggee is collected from when it starts, shows paused at a
+--- breakpoint, and stops being collected when its session ends.
 function M.hook_dap()
   local ok, dap = pcall(require, "dap")
   if not ok or dap_hooked then
@@ -270,38 +434,66 @@ function M.hook_dap()
     return session and session.config and vim.tbl_contains(M.config.dap.adapters, session.config.type)
   end
 
-  -- The session that started the current collection, not just any .NET session
-  local function owns(session)
-    return ours(session) and owner ~= nil and session.id == owner
+  -- The process a session started, if it is still listed. Only that session's events act on it:
+  -- with an API and a worker debugged together, one must not pause or stop the other.
+  ---@return DotnetCountersProcess?
+  local function owned_by(session)
+    if not ours(session) then
+      return nil
+    end
+    for _, p in ipairs(processes) do
+      if p.owner ~= nil and p.owner == session.id then
+        return p
+      end
+    end
   end
 
   dap.listeners.after.event_process[key] = function(session, body)
     if M.config.dap.enabled and ours(session) and body and body.systemProcessId then
       local name = session.config.program and vim.fn.fnamemodify(session.config.program, ":t:r") or body.name
-      M.attach(body.systemProcessId, name)
-      if active then
-        owner = session.id
+      local p = M.attach(body.systemProcessId, name)
+      if p then
+        p.owner = session.id
       end
     end
   end
   dap.listeners.after.event_stopped[key] = function(session)
-    if owns(session) and active then
-      view.status = "paused"
-      state:commit()
+    local p = owned_by(session)
+    if p and p.collector then
+      p.view.status = "paused"
+      p.state:commit()
+      -- The process you are stepping through is the one to look at
+      if M.config.dap.follow then
+        shown = p
+      end
+      -- Also when not shown: the header lists its status
       redraw()
     end
   end
   dap.listeners.after.event_continued[key] = function(session)
-    if owns(session) and active and view.status == "paused" then
-      view.status = "running"
+    local p = owned_by(session)
+    if p and p.collector and p.view.status == "paused" then
+      p.view.status = "running"
       redraw()
     end
   end
   local function finished(session)
-    if owns(session) and (active or panel.is_open()) and view.pid then
-      owner = nil
-      M.detach(M.config.dap.close_on_exit)
+    local p = owned_by(session)
+    if not p then
+      return
     end
+    p.owner = nil
+    if M.config.dap.close_on_exit then
+      remove(p)
+      if not any_collecting() then
+        processes, shown = {}, nil
+        stop_idle_timer()
+        return panel.close()
+      end
+    else
+      stop(p)
+    end
+    redraw()
   end
   dap.listeners.before.event_terminated[key] = finished
   dap.listeners.before.event_exited[key] = finished
@@ -335,7 +527,6 @@ function M.setup(opts)
       custom.max_tag_sets = M.default_config.custom.max_tag_sets
     end
   end
-  state = new_state()
   if package.loaded["dap"] then
     M.hook_dap()
   else

@@ -18,6 +18,19 @@ commands may land in a minor release; they will always be listed here.
   per second whatever `refresh_interval` is. `custom.max_tag_sets` limits the
   tag sets shown and `custom.graphs` gives chosen instruments a full graph
   ([#3](https://github.com/alessandropietrobelli/dotnet-counters.nvim/issues/3)).
+- Several processes are collected at once, each with its own graphs: every
+  .NET debug session adds its process, and `:DotnetCounters attach` adds one
+  too. The panel shows one, listing the others under its header; `<Tab>` /
+  `<S-Tab>` and `:DotnetCounters next` / `prev` switch, and the process that
+  stops at a breakpoint is shown (`dap.follow`). `:DotnetCounters detach all`
+  stops them all ([#2](https://github.com/alessandropietrobelli/dotnet-counters.nvim/issues/2)).
+
+### Changed
+
+- `:DotnetCounters attach` and a new debug session add a process instead of
+  replacing the one collected. When a session ends, only its process leaves the
+  panel, which closes once none is left (`dap.close_on_exit`).
+  `:DotnetCounters detach` stops the process shown.
 
 ## [0.1.2] - 2026-11-07
 
