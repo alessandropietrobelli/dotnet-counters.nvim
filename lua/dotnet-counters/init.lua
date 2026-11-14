@@ -487,8 +487,8 @@ function M.hook_dap()
   -- event, and drop the listener if it returned true. Report it instead, and return nothing.
   local function listen(phase, event, fn)
     dap.listeners[phase][event][key] = function(session, body)
-      local ok, err = xpcall(fn, debug.traceback, session, body)
-      if not ok then
+      local done, err = xpcall(fn, debug.traceback, session, body)
+      if not done then
         notify(("nvim-dap %s: %s"):format(event, err), vim.log.levels.ERROR)
       end
     end

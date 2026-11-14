@@ -288,10 +288,10 @@ function M.build(state, view, opts)
   end
   b:add(title)
   local status = status_icon[view.status] .. view.status
-  local label = view.pid and ("  %s · pid %d"):format(view.name or "process", view.pid) or ""
+  local process = view.pid and ("  %s · pid %d"):format(view.name or "process", view.pid) or ""
   b:add({
     { status, status_hl[view.status] },
-    { M.fit(label, width - vim.fn.strdisplaywidth(status)), "DotnetCountersMuted" },
+    { M.fit(process, width - vim.fn.strdisplaywidth(status)), "DotnetCountersMuted" },
   })
   -- Under the status it explains, before the other processes
   if view.message then
